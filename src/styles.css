@@ -1,0 +1,259 @@
+:root {
+  color-scheme: light;
+  --colorNeutralBackground1: #ffffff;
+  --colorNeutralBackground2: #f7f9fc;
+  --colorNeutralBackground3: #f3f5f9;
+  --colorNeutralForeground1: #242424;
+  --colorNeutralForeground2: #424242;
+  --colorNeutralForeground3: #616161;
+  --colorNeutralStroke1: #d1d1d1;
+  --colorNeutralStroke2: #e0e0e0;
+  --colorBrandBackground: #0f6cbd;
+  --colorBrandBackgroundHover: #115ea3;
+  --colorBrandForeground1: #0f6cbd;
+  --colorBrandStroke1: #0f6cbd;
+  --colorSuccessBackground: #e7f4ea;
+  --colorSuccessStroke: #9fd89f;
+  --colorWarningBackground: #fff4ce;
+  --colorWarningStroke: #f1c57a;
+  --focusRing: 0 0 0 2px #ffffff, 0 0 0 4px #0f6cbd;
+  --radiusSmall: 4px;
+  --radiusMedium: 8px;
+  --space2: 8px;
+  --space3: 12px;
+  --space4: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", "Segoe UI Variable", Tahoma, sans-serif;
+  color: var(--colorNeutralForeground1);
+  background: linear-gradient(180deg, #ffffff 0%, #f3f6fb 100%);
+}
+
+.fluent-root {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.app-shell {
+  padding: var(--space3);
+  display: grid;
+  gap: var(--space3);
+}
+
+.topbar {
+  background: var(--colorBrandBackground);
+  color: #ffffff;
+  border-radius: var(--radiusMedium);
+  padding: var(--space3);
+  display: flex;
+  gap: var(--space2);
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.topbar p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  opacity: 0.95;
+}
+
+.panel {
+  background: var(--colorNeutralBackground1);
+  border: 1px solid var(--colorNeutralStroke2);
+  border-radius: var(--radiusMedium);
+  padding: var(--space3);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.panel h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--colorNeutralForeground1);
+}
+
+.context-grid,
+.grid,
+.match-grid,
+.attachment-list {
+  margin-top: var(--space2);
+  display: grid;
+  gap: var(--space2);
+}
+
+.match-card,
+.attachment-row {
+  border: 1px solid var(--colorNeutralStroke1);
+  border-radius: var(--radiusSmall);
+  background: var(--colorNeutralBackground2);
+}
+
+.match-card {
+  padding: var(--space2);
+  display: grid;
+  gap: 2px;
+}
+
+.match-card strong {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.match-card small,
+.attachment-size,
+.hint,
+.muted,
+.label {
+  color: var(--colorNeutralForeground3);
+}
+
+.match-card.confidence.high {
+  background: var(--colorSuccessBackground);
+  border-color: var(--colorSuccessStroke);
+}
+
+.match-card.confidence.low {
+  background: var(--colorWarningBackground);
+  border-color: var(--colorWarningStroke);
+}
+
+.attachment-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--space2);
+  padding: var(--space2);
+}
+
+.attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+label {
+  display: grid;
+  gap: 4px;
+  margin-top: var(--space2);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--colorNeutralForeground2);
+}
+
+input,
+textarea,
+select,
+button {
+  font: inherit;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid var(--colorNeutralStroke1);
+  border-radius: var(--radiusSmall);
+  padding: 6px 10px;
+  background: var(--colorNeutralBackground1);
+  color: var(--colorNeutralForeground1);
+}
+
+textarea {
+  resize: vertical;
+}
+
+input:hover,
+textarea:hover,
+select:hover {
+  border-color: #b3b3b3;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: none;
+  box-shadow: var(--focusRing);
+}
+
+.actions {
+  margin-top: var(--space2);
+  display: flex;
+  gap: var(--space2);
+  flex-wrap: wrap;
+}
+
+button {
+  min-height: 32px;
+  border-radius: var(--radiusSmall);
+  border: 1px solid transparent;
+  padding: 0 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.btn-primary {
+  background: var(--colorBrandBackground);
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  background: var(--colorBrandBackgroundHover);
+}
+
+.btn-secondary {
+  background: var(--colorNeutralBackground1);
+  color: var(--colorBrandForeground1);
+  border-color: var(--colorNeutralStroke1);
+}
+
+.btn-secondary:hover {
+  background: var(--colorNeutralBackground3);
+}
+
+button:disabled,
+input:disabled,
+textarea:disabled,
+select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.output {
+  min-height: 48px;
+  max-height: 220px;
+  overflow: auto;
+  margin-top: var(--space2);
+  border: 1px solid var(--colorNeutralStroke1);
+  border-radius: var(--radiusSmall);
+  background: var(--colorNeutralBackground2);
+  padding: var(--space2);
+  font-size: 12px;
+}
+
+.label {
+  display: inline-block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+@media (min-width: 540px) {
+  .context-grid,
+  .match-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
