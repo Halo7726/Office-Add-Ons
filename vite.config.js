@@ -1,16 +1,17 @@
-import { defineConfig } from "vite";
-import basicSsl from "@vitejs/plugin-basic-ssl";
+import { defineConfig } from 'vite'
+import fs from 'fs'
+import path from 'path'
+import os from 'os'
+
+const certDir = path.join(os.homedir(), '.office-addin-dev-certs')
 
 export default defineConfig({
-  plugins: [basicSsl()],
+  plugins: [],
   server: {
-    host: "localhost",
-    port: 3000,
-    https: true,
-  },
-  preview: {
-    host: "localhost",
-    port: 3000,
-    https: true,
-  },
-});
+    https: {
+      cert: fs.readFileSync(path.join(certDir, 'localhost.crt')),
+      key: fs.readFileSync(path.join(certDir, 'localhost.key')),
+    },
+    port: 3000
+  }
+})

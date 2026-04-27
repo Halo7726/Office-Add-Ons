@@ -69,6 +69,16 @@ body {
   opacity: 0.95;
 }
 
+.topbar-actions {
+  display: flex;
+  gap: var(--space2);
+  align-items: center;
+}
+
+.hidden-panel {
+  display: none;
+}
+
 .panel {
   background: var(--colorNeutralBackground1);
   border: 1px solid var(--colorNeutralStroke2);

@@ -21,6 +21,7 @@ const state = {
   selectedCompanyId: "",
   selectedAttachmentIds: new Set(),
   uploadResults: [],
+  showSettings: false,
 };
 
 function escapeHtml(value) {
@@ -155,6 +156,147 @@ function buildCompanyContactPatch(companyRecord, fromEmail) {
   return patch;
 }
 
+function normalizeText(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function parseProjectTitleFromSubject(subject) {
+  if (!subject) return "";
+  const cleaned = String(subject).replace(/[–—]/g, "-");
+  const match = cleaned.match(/([A-Za-z0-9][^\-\r\n]+?)\s*-\s*([A-Za-z0-9][^\r\n]+)/);
+  if (!match) return "";
+  return `${match[1].trim()} - ${match[2].trim()}`;
+}
+
+function findMatchingResponseItem(items, fromEmail, subject) {
+  if (!items?.length) {
+    return null;
+  }
+
+  const projectTitle = parseProjectTitleFromSubject(subject);
+  const normalizedEmail = normalizeText(fromEmail);
+  const emailLocalPart = normalizedEmail.split("@")[0] || "";
+  const vendorFieldKeys = [
+    "Vendor Or subcontractor",
+    "Vendor",
+    "Subcontractor",
+    "Company",
+    "Bidder",
+    "Contractor",
+    "VendorName",
+    "SubcontractorName",
+  ];
+  const titleFieldKeys = [
+    "Title",
+    "Project Title",
+    "ProjectTitle",
+    "Project",
+    "Job Title",
+    "JobName",
+  ];
+
+  let titleOnlyMatch = null;
+  let emailOnlyMatch = null;
+
+  for (const item of items) {
+    const fields = item.fields || {};
+    const titleKey = resolveFirstExistingFieldKey(fields, titleFieldKeys);
+    const vendorKey = resolveFirstExistingFieldKey(fields, vendorFieldKeys);
+    const titleValue = normalizeText(fields[titleKey]);
+    const vendorValue = normalizeText(fields[vendorKey]);
+
+    const titleMatches = projectTitle && titleValue && titleValue.includes(normalizeText(projectTitle));
+    const emailMatches =
+      normalizedEmail &&
+      vendorValue &&
+      (vendorValue.includes(normalizedEmail) || (emailLocalPart && vendorValue.includes(emailLocalPart)));
+
+    if (titleMatches && emailMatches) {
+      return item;
+    }
+
+    if (!titleOnlyMatch && titleMatches) {
+      titleOnlyMatch = item;
+    }
+    if (!emailOnlyMatch && emailMatches) {
+      emailOnlyMatch = item;
+    }
+  }
+
+  return titleOnlyMatch || emailOnlyMatch || null;
+}
+
+function resolveResponsePatchField(fields) {
+  return (
+    resolveFirstExistingFieldKey(fields, [
+      "Status",
+      "ResponseStatus",
+      "QuoteStatus",
+      "ResponseType",
+      "Quote",
+      "Response",
+    ]) || "Status"
+  );
+}
+
+async function patchResponseListItems() {
+  const fromEmail = state.messageContext?.from || "";
+  const subject = state.messageContext?.subject || "";
+  const projectTitle = parseProjectTitleFromSubject(subject);
+  const results = [];
+
+  const patchList = async (listId, label) => {
+    if (!listId) {
+      return { updated: false, reason: `${label} list is not configured.` };
+    }
+
+    const listItems = (await getListItemsById(state.config, listId)).value || [];
+    const item = findMatchingResponseItem(listItems, fromEmail, subject);
+    if (!item) {
+      const missingTarget = projectTitle ? `${projectTitle}` : fromEmail;
+      return {
+        updated: false,
+        reason: `No ${label} response item found for "${missingTarget}".`,
+      };
+    }
+
+    const patchKey = resolveResponsePatchField(item.fields || {});
+    const currentValue = normalizeText(item.fields?.[patchKey]);
+    if (currentValue === "quoted") {
+      return {
+        updated: false,
+        reason: `Response item (${item.id}) is already Quoted.`,
+        listId,
+        itemId: item.id,
+      };
+    }
+
+    const patchValue = patchKey.toLowerCase().includes("status") ? "Quoted" : "Quote";
+    const patch = { [patchKey]: patchValue };
+    await updateListItemFields(state.config, listId, item.id, patch);
+
+    return {
+      updated: true,
+      reason: `Updated ${label} response item (${item.id}) to ${patchValue}.`,
+      listId,
+      itemId: item.id,
+      patch,
+    };
+  };
+
+  if (state.config.responseListId) {
+    results.push(await patchList(state.config.responseListId, "Response"));
+  }
+
+  if (results.length === 0) {
+    return { updated: false, reason: "No response list configured." };
+  }
+
+  const updated = results.some((result) => result.updated);
+  const reason = results.map((result) => result.reason).join(" ");
+  return { updated, reason, details: results };
+}
+
 function createApp() {
   const context = state.messageContext || {
     subject: "",
@@ -195,7 +337,10 @@ function createApp() {
           <h1>SHC Project Upload</h1>
           <p>Match this email to project routing and upload selected attachments.</p>
         </div>
-        <button id="refreshContext" class="btn-secondary">Refresh email context</button>
+        <div class="topbar-actions">
+          <button id="toggleSettings" class="btn-secondary">${state.showSettings ? "Hide settings" : "Settings"}</button>
+          <button id="refreshContext" class="btn-secondary">Refresh email context</button>
+        </div>
       </header>
 
       <section class="panel context-panel">
@@ -245,7 +390,7 @@ function createApp() {
           <button id="signin" class="btn-secondary">Sign in</button>
           <button id="autoMatch" class="btn-primary">Auto-match</button>
           <button id="patchContacts" class="btn-secondary">Patch missing contacts</button>
-          <button id="saveConfig" class="btn-secondary">Save settings</button>
+          <button id="updateResponseItem" class="btn-secondary">Update response status</button>
         </div>
         <p id="accountLabel" class="hint">${
           state.account ? `Signed in as ${state.account.username}` : "Not signed in."
@@ -255,9 +400,6 @@ function createApp() {
       <section class="panel attachments-panel">
         <h2>Attachments</h2>
         <div class="attachment-list">${attachmentRows}</div>
-        <label>Fallback local file
-          <input id="fileInput" type="file" />
-        </label>
         <div class="actions">
           <button id="uploadSelected" class="btn-primary">Upload selected</button>
         </div>
@@ -268,8 +410,8 @@ function createApp() {
         )}</pre>
       </section>
 
-      <section class="panel slim">
-        <h2>Admin Settings</h2>
+      <section class="panel slim ${state.showSettings ? "" : "hidden-panel"}" id="settingsPanel">
+        <h2>Settings</h2>
         <div class="grid">
           <label>Tenant ID
             <input id="tenantId" value="${state.config.tenantId || "common"}" />
@@ -286,6 +428,9 @@ function createApp() {
           <label>Company List ID
             <input id="companyListId" value="${state.config.companyListId || ""}" />
           </label>
+          <label>Response list ID
+            <input id="responseListId" value="${state.config.responseListId || ""}" />
+          </label>
           <label>Drive ID
             <input id="driveId" value="${state.config.driveId || ""}" />
           </label>
@@ -297,6 +442,9 @@ function createApp() {
               state.config.folderTemplate || "Bids/Current/{project}/Subcontractors/{subcontractor}"
             }" />
           </label>
+        </div>
+        <div class="actions">
+          <button id="saveConfig" class="btn-secondary">Save settings</button>
         </div>
       </section>
 
@@ -329,6 +477,7 @@ function syncConfigFromUI() {
     siteId: document.getElementById("siteId").value.trim(),
     listId: document.getElementById("listId").value.trim(),
     companyListId: document.getElementById("companyListId").value.trim(),
+    responseListId: document.getElementById("responseListId").value.trim(),
     driveId: document.getElementById("driveId").value.trim(),
     libraryFolder: document.getElementById("libraryFolder").value.trim(),
     folderTemplate: document.getElementById("folderTemplate").value.trim(),
@@ -438,41 +587,41 @@ async function uploadSelected() {
 
   const uploads = [];
 
-  if (hasOutlookContext()) {
-    const selectedIds = [...state.selectedAttachmentIds];
-    const selected = state.messageContext.attachments.filter((item) => selectedIds.includes(item.id));
-
-    for (const attachment of selected) {
-      const bytes = await getAttachmentBytes(attachment.id);
-      const response = await uploadBytesToLibrary(
-        state.config,
-        attachment.name,
-        bytes,
-        destination,
-        "application/octet-stream"
-      );
-
-      uploads.push({
-        source: "outlook",
-        fileName: attachment.name,
-        webUrl: response.webUrl,
-      });
-    }
+  if (!hasOutlookContext()) {
+    throw new Error("Outlook attachments are required for upload.");
   }
 
-  const fileInput = document.getElementById("fileInput");
-  const localFile = fileInput.files[0];
-  if (localFile) {
-    const response = await uploadToLibrary({ ...state.config, libraryFolder: destination }, localFile);
+  const selectedIds = [...state.selectedAttachmentIds];
+  const selected = state.messageContext.attachments.filter((item) => selectedIds.includes(item.id));
+
+  for (const attachment of selected) {
+    const bytes = await getAttachmentBytes(attachment.id);
+    const response = await uploadBytesToLibrary(
+      state.config,
+      attachment.name,
+      bytes,
+      destination,
+      "application/octet-stream"
+    );
+
     uploads.push({
-      source: "local",
-      fileName: localFile.name,
+      source: "outlook",
+      fileName: attachment.name,
       webUrl: response.webUrl,
     });
   }
 
   if (uploads.length === 0) {
-    throw new Error("Select at least one Outlook attachment or local file.");
+    throw new Error("Select at least one Outlook attachment.");
+  }
+
+  const responseResult = await patchResponseListItems();
+  if (responseResult.reason) {
+    uploads.push({
+      source: "response-list",
+      fileName: "response update",
+      webUrl: responseResult.reason,
+    });
   }
 
   if (patchResult.updated) {
@@ -520,6 +669,11 @@ function wireEvents() {
     });
   });
 
+  document.getElementById("toggleSettings").addEventListener("click", () => {
+    state.showSettings = !state.showSettings;
+    render();
+  });
+
   document.getElementById("autoMatch").addEventListener("click", async () => {
     await withBusy("Auto-match", async () => {
       syncConfigFromUI();
@@ -542,6 +696,14 @@ function wireEvents() {
     await withBusy("Patch contacts", async () => {
       syncConfigFromUI();
       const result = await patchSelectedCompanyContactsIfMissing();
+      setStatus(result.reason);
+    });
+  });
+
+  document.getElementById("updateResponseItem").addEventListener("click", async () => {
+    await withBusy("Update response status", async () => {
+      syncConfigFromUI();
+      const result = await patchResponseListItems();
       setStatus(result.reason);
     });
   });

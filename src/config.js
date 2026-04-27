@@ -4,6 +4,7 @@ const fromEnv = {
   siteId: import.meta.env.VITE_SITE_ID || "",
   listId: import.meta.env.VITE_LIST_ID || "",
   companyListId: import.meta.env.VITE_COMPANY_LIST_ID || "",
+  responseListId: import.meta.env.VITE_RESPONSE_LIST_ID || "",
   driveId: import.meta.env.VITE_DRIVE_ID || "",
   libraryFolder: import.meta.env.VITE_LIBRARY_FOLDER || "Shared Documents/Incoming",
   folderTemplate:
