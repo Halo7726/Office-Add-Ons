@@ -13,5 +13,13 @@ export default defineConfig({
       key: fs.readFileSync(path.join(certDir, 'localhost.key')),
     },
     port: 3000
-  }
+  },
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        authDialog: path.resolve(__dirname, 'auth-dialog.html'),
+      },
+    },
+  },
 })

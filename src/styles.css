@@ -69,6 +69,31 @@ body {
   opacity: 0.95;
 }
 
+.status-banner {
+  margin: var(--space3) 0 0;
+  padding: var(--space3);
+  border-radius: var(--radiusMedium);
+  border: 1px solid transparent;
+  background: var(--colorNeutralBackground2);
+  color: var(--colorNeutralForeground1);
+}
+
+.status-banner.success {
+  background: var(--colorSuccessBackground);
+  border-color: var(--colorSuccessStroke);
+}
+
+.status-banner.error {
+  background: #fdecea;
+  border-color: #f5c6cb;
+  color: #78191c;
+}
+
+.status-banner.info {
+  background: var(--colorNeutralBackground2);
+  border-color: var(--colorNeutralStroke2);
+}
+
 .topbar-actions {
   display: flex;
   gap: var(--space2);

@@ -9,7 +9,7 @@ import {
   uploadToLibrary,
 } from "./graphClient";
 import { getAttachmentBytes, getMessageContext, hasOutlookContext } from "./outlookContext";
-import { resolveRoute } from "./routingEngine";
+import { resolveRoute, resolveItbMatch } from "./routingEngine";
 
 const state = {
   config: loadConfig(),
@@ -17,11 +17,15 @@ const state = {
   messageContext: null,
   projects: [],
   companies: [],
+  itbItems: [],
+  itbMatch: null,
   route: null,
   selectedCompanyId: "",
   selectedAttachmentIds: new Set(),
   uploadResults: [],
   showSettings: false,
+  statusMessage: "Ready.",
+  statusType: "info",
 };
 
 function escapeHtml(value) {
@@ -89,6 +93,40 @@ function buildFolderPathFromRouteTemplate(projectName, companyName) {
   return template
     .replaceAll("{project}", sanitize(projectName, "Unmapped Project"))
     .replaceAll("{subcontractor}", sanitize(companyName, "Unmapped Subcontractor"));
+}
+
+function sanitizeFileName(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, " ")
+    .replace(/^[-\s]+|[-\s]+$/g, "");
+}
+
+function buildUploadFileName(originalName, companyName, projectTitle) {
+  const extensionMatch = originalName.match(/(\.[^.]*)$/);
+  const extension = extensionMatch ? extensionMatch[1] : "";
+  const baseName = extensionMatch ? originalName.slice(0, -extension.length) : originalName;
+
+  const companySegment = sanitizeFileName(companyName || "Company");
+  const projectSegment = sanitizeFileName(projectTitle || baseName || "Proposal");
+  const dateSegment = new Date().toISOString().slice(0, 10);
+
+  const candidate = `${companySegment} - ${projectSegment} - ${dateSegment}${extension}`;
+  const maxLength = 100;
+  if (candidate.length <= maxLength) {
+    return candidate;
+  }
+
+  const truncatedCompany = companySegment.slice(0, 30);
+  const truncatedProject = projectSegment.slice(0, 40);
+  const fallback = `${truncatedCompany} - ${truncatedProject} - ${dateSegment}${extension}`;
+  if (fallback.length <= maxLength) {
+    return fallback;
+  }
+
+  const shortCompany = companySegment.slice(0, 20);
+  return `${shortCompany} - ${dateSegment}${extension}`;
 }
 
 function buildCompanySelectOptions(route) {
@@ -168,63 +206,6 @@ function parseProjectTitleFromSubject(subject) {
   return `${match[1].trim()} - ${match[2].trim()}`;
 }
 
-function findMatchingResponseItem(items, fromEmail, subject) {
-  if (!items?.length) {
-    return null;
-  }
-
-  const projectTitle = parseProjectTitleFromSubject(subject);
-  const normalizedEmail = normalizeText(fromEmail);
-  const emailLocalPart = normalizedEmail.split("@")[0] || "";
-  const vendorFieldKeys = [
-    "Vendor Or subcontractor",
-    "Vendor",
-    "Subcontractor",
-    "Company",
-    "Bidder",
-    "Contractor",
-    "VendorName",
-    "SubcontractorName",
-  ];
-  const titleFieldKeys = [
-    "Title",
-    "Project Title",
-    "ProjectTitle",
-    "Project",
-    "Job Title",
-    "JobName",
-  ];
-
-  let titleOnlyMatch = null;
-  let emailOnlyMatch = null;
-
-  for (const item of items) {
-    const fields = item.fields || {};
-    const titleKey = resolveFirstExistingFieldKey(fields, titleFieldKeys);
-    const vendorKey = resolveFirstExistingFieldKey(fields, vendorFieldKeys);
-    const titleValue = normalizeText(fields[titleKey]);
-    const vendorValue = normalizeText(fields[vendorKey]);
-
-    const titleMatches = projectTitle && titleValue && titleValue.includes(normalizeText(projectTitle));
-    const emailMatches =
-      normalizedEmail &&
-      vendorValue &&
-      (vendorValue.includes(normalizedEmail) || (emailLocalPart && vendorValue.includes(emailLocalPart)));
-
-    if (titleMatches && emailMatches) {
-      return item;
-    }
-
-    if (!titleOnlyMatch && titleMatches) {
-      titleOnlyMatch = item;
-    }
-    if (!emailOnlyMatch && emailMatches) {
-      emailOnlyMatch = item;
-    }
-  }
-
-  return titleOnlyMatch || emailOnlyMatch || null;
-}
 
 function resolveResponsePatchField(fields) {
   return (
@@ -239,62 +220,50 @@ function resolveResponsePatchField(fields) {
   );
 }
 
-async function patchResponseListItems() {
-  const fromEmail = state.messageContext?.from || "";
-  const subject = state.messageContext?.subject || "";
-  const projectTitle = parseProjectTitleFromSubject(subject);
-  const results = [];
+async function updateItbMatchStatus() {
+  if (!state.config.responseListId) {
+    return { updated: false, reason: "ITB/RFQ list is not configured." };
+  }
 
-  const patchList = async (listId, label) => {
-    if (!listId) {
-      return { updated: false, reason: `${label} list is not configured.` };
+  // Use the pre-matched ITB item from auto-match when available.
+  // If auto-match wasn't run yet, search the pre-loaded items now.
+  let item = state.itbMatch?.item || null;
+
+  if (!item && state.itbItems.length > 0) {
+    const match = resolveItbMatch(state.messageContext, state.itbItems, state.config);
+    if (match) {
+      state.itbMatch = match;
+      item = match.item;
     }
+  }
 
-    const listItems = (await getListItemsById(state.config, listId)).value || [];
-    const item = findMatchingResponseItem(listItems, fromEmail, subject);
-    if (!item) {
-      const missingTarget = projectTitle ? `${projectTitle}` : fromEmail;
-      return {
-        updated: false,
-        reason: `No ${label} response item found for "${missingTarget}".`,
-      };
-    }
-
-    const patchKey = resolveResponsePatchField(item.fields || {});
-    const currentValue = normalizeText(item.fields?.[patchKey]);
-    if (currentValue === "quoted") {
-      return {
-        updated: false,
-        reason: `Response item (${item.id}) is already Quoted.`,
-        listId,
-        itemId: item.id,
-      };
-    }
-
-    const patchValue = patchKey.toLowerCase().includes("status") ? "Quoted" : "Quote";
-    const patch = { [patchKey]: patchValue };
-    await updateListItemFields(state.config, listId, item.id, patch);
-
+  if (!item) {
+    const fromEmail = state.messageContext?.from || "";
     return {
-      updated: true,
-      reason: `Updated ${label} response item (${item.id}) to ${patchValue}.`,
-      listId,
-      itemId: item.id,
-      patch,
+      updated: false,
+      reason: `No ITB/RFQ row found matching sender "${fromEmail}".`,
     };
+  }
+
+  const fields = item.fields || {};
+  const statusKey = resolveResponsePatchField(fields);
+  const currentValue = normalizeText(fields[statusKey]);
+
+  if (currentValue === "quote received") {
+    return {
+      updated: false,
+      reason: `ITB/RFQ item "${state.itbMatch?.projectName || item.id}" is already marked as Quote Received.`,
+    };
+  }
+
+  const patch = { [statusKey]: "Quote Received" };
+  await updateListItemFields(state.config, state.config.responseListId, item.id, patch);
+  item.fields = { ...fields, ...patch };
+
+  return {
+    updated: true,
+    reason: `Marked ITB/RFQ item "${state.itbMatch?.projectName || item.id}" as Quote Received.`,
   };
-
-  if (state.config.responseListId) {
-    results.push(await patchList(state.config.responseListId, "Response"));
-  }
-
-  if (results.length === 0) {
-    return { updated: false, reason: "No response list configured." };
-  }
-
-  const updated = results.some((result) => result.updated);
-  const reason = results.map((result) => result.reason).join(" ");
-  return { updated, reason, details: results };
 }
 
 function createApp() {
@@ -342,6 +311,9 @@ function createApp() {
           <button id="refreshContext" class="btn-secondary">Refresh email context</button>
         </div>
       </header>
+      <div id="statusBanner" class="status-banner ${state.statusType || "info"}">${escapeHtml(
+        state.statusMessage || ""
+      )}</div>
 
       <section class="panel context-panel">
         <h2>Email Context</h2>
@@ -389,8 +361,6 @@ function createApp() {
         <div class="actions">
           <button id="signin" class="btn-secondary">Sign in</button>
           <button id="autoMatch" class="btn-primary">Auto-match</button>
-          <button id="patchContacts" class="btn-secondary">Patch missing contacts</button>
-          <button id="updateResponseItem" class="btn-secondary">Update response status</button>
         </div>
         <p id="accountLabel" class="hint">${
           state.account ? `Signed in as ${state.account.username}` : "Not signed in."
@@ -403,7 +373,7 @@ function createApp() {
         <div class="actions">
           <button id="uploadSelected" class="btn-primary">Upload selected</button>
         </div>
-        <pre id="fileOutput" class="output" role="log" aria-live="polite">${JSON.stringify(
+        <pre id="fileOutput" class="output hidden-panel" role="log" aria-live="polite">${JSON.stringify(
           state.uploadResults,
           null,
           2
@@ -431,6 +401,10 @@ function createApp() {
           <label>Response list ID
             <input id="responseListId" value="${state.config.responseListId || ""}" />
           </label>
+          <label>
+            <span class="label">Rename upload files to shorter names</span>
+            <input id="renameUploadFiles" type="checkbox" ${state.config.renameUploadFiles ? "checked" : ""} />
+          </label>
           <label>Drive ID
             <input id="driveId" value="${state.config.driveId || ""}" />
           </label>
@@ -448,7 +422,7 @@ function createApp() {
         </div>
       </section>
 
-      <section class="panel slim">
+      <section class="panel slim hidden-panel">
         <h2>Create / Update Record</h2>
         <label>List item fields (JSON)
           <textarea id="listFields" rows="5">{
@@ -459,10 +433,10 @@ function createApp() {
         <div class="actions">
           <button id="addListItem" class="btn-primary">Write list record</button>
         </div>
-        <pre id="listOutput" class="output" role="log" aria-live="polite"></pre>
+        <pre id="listOutput" class="output hidden-panel" role="log" aria-live="polite"></pre>
       </section>
 
-      <section class="panel slim">
+      <section class="panel slim hidden-panel">
         <h2>Execution log</h2>
         <pre id="status" class="output" role="status" aria-live="polite"></pre>
       </section>
@@ -478,14 +452,21 @@ function syncConfigFromUI() {
     listId: document.getElementById("listId").value.trim(),
     companyListId: document.getElementById("companyListId").value.trim(),
     responseListId: document.getElementById("responseListId").value.trim(),
+    renameUploadFiles: document.getElementById("renameUploadFiles").checked,
     driveId: document.getElementById("driveId").value.trim(),
     libraryFolder: document.getElementById("libraryFolder").value.trim(),
     folderTemplate: document.getElementById("folderTemplate").value.trim(),
   };
 }
 
-function setStatus(message) {
-  document.getElementById("status").textContent = message;
+function setStatus(message, type = "info") {
+  state.statusMessage = message;
+  state.statusType = type;
+  const banner = document.getElementById("statusBanner");
+  if (banner) {
+    banner.textContent = message;
+    banner.className = `status-banner ${type}`;
+  }
 }
 
 function setOutput(elementId, payload) {
@@ -516,14 +497,28 @@ async function loadRoutingLists() {
   } else {
     state.companies = [];
   }
+
+  if (state.config.responseListId) {
+    const itbItems = await getListItemsById(state.config, state.config.responseListId);
+    state.itbItems = itbItems.value || [];
+  } else {
+    state.itbItems = [];
+  }
 }
 
 async function runAutoMatch() {
+  syncConfigFromUI();
+
   if (!state.messageContext) {
     await loadMessageContext();
   }
 
   await loadRoutingLists();
+
+  // Find the ITB/RFQ row matching this email's sender (Recipient Email) + subject (Title)
+  state.itbMatch = resolveItbMatch(state.messageContext, state.itbItems, state.config);
+
+  // Standard routing for project list + company list (drives the subcontractor dropdown)
   state.route = resolveRoute(state.messageContext, state.projects, state.companies, state.config);
   state.selectedCompanyId =
     state.route.subcontractor.id || state.route.companyCandidates[0]?.id || "";
@@ -532,6 +527,22 @@ async function runAutoMatch() {
     state.route = resolveRoute(state.messageContext, state.projects, state.companies, state.config, {
       companyIdOverride: state.selectedCompanyId,
     });
+  }
+
+  // Override project name and folder path with the ITB match when found.
+  // The subcontractor name still comes from the company list for accurate folder naming.
+  if (state.itbMatch) {
+    state.route.project = {
+      id: state.itbMatch.item.id,
+      name: state.itbMatch.projectName,
+      score: state.itbMatch.emailScore + state.itbMatch.titleScore,
+    };
+    state.route.folderPath = buildFolderPathFromRouteTemplate(
+      state.itbMatch.projectName,
+      state.route.subcontractor.name
+    );
+    state.route.confidence = state.itbMatch.confidence;
+    state.route.reason = `ITB/RFQ matched on recipient email + title (${state.itbMatch.confidence}% confidence)`;
   }
 }
 
@@ -574,6 +585,8 @@ async function patchSelectedCompanyContactsIfMissing() {
 }
 
 async function uploadSelected() {
+  syncConfigFromUI();
+
   const destination =
     document.getElementById("resolvedFolderPath").value.trim() ||
     state.route?.folderPath ||
@@ -583,7 +596,19 @@ async function uploadSelected() {
     throw new Error("Destination folder is required.");
   }
 
-  const patchResult = await patchSelectedCompanyContactsIfMissing();
+  if (!state.messageContext) {
+    await loadMessageContext();
+  }
+
+  if (!state.route) {
+    await runAutoMatch();
+  }
+
+  const projectTitle = parseProjectTitleFromSubject(state.messageContext?.subject || "") || state.route?.project?.name;
+  const companyName = state.route?.subcontractor?.name || "Company";
+
+  const contactResult = await patchSelectedCompanyContactsIfMissing();
+  const responseResult = await updateItbMatchStatus();
 
   const uploads = [];
 
@@ -594,11 +619,18 @@ async function uploadSelected() {
   const selectedIds = [...state.selectedAttachmentIds];
   const selected = state.messageContext.attachments.filter((item) => selectedIds.includes(item.id));
 
+  if (selected.length === 0) {
+    throw new Error("Select at least one Outlook attachment.");
+  }
+
   for (const attachment of selected) {
     const bytes = await getAttachmentBytes(attachment.id);
+    const uploadName = state.config.renameUploadFiles
+      ? buildUploadFileName(attachment.name, companyName, projectTitle)
+      : attachment.name;
     const response = await uploadBytesToLibrary(
       state.config,
-      attachment.name,
+      uploadName,
       bytes,
       destination,
       "application/octet-stream"
@@ -606,17 +638,20 @@ async function uploadSelected() {
 
     uploads.push({
       source: "outlook",
-      fileName: attachment.name,
+      fileName: uploadName,
       webUrl: response.webUrl,
     });
   }
 
-  if (uploads.length === 0) {
-    throw new Error("Select at least one Outlook attachment.");
+  if (contactResult.updated) {
+    uploads.unshift({
+      source: "company-list",
+      fileName: "contact backfill",
+      webUrl: contactResult.reason,
+    });
   }
 
-  const responseResult = await patchResponseListItems();
-  if (responseResult.reason) {
+  if (responseResult.updated) {
     uploads.push({
       source: "response-list",
       fileName: "response update",
@@ -624,25 +659,26 @@ async function uploadSelected() {
     });
   }
 
-  if (patchResult.updated) {
-    uploads.unshift({
-      source: "company-list",
-      fileName: "contact backfill",
-      webUrl: patchResult.reason,
-    });
-  }
-
   state.uploadResults = uploads;
   setOutput("fileOutput", uploads);
+
+  const summary = [
+    "Upload complete.",
+    contactResult.reason,
+    responseResult.reason,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  setStatus(summary, "success");
 }
 
 async function withBusy(label, action) {
   try {
-    setStatus(`${label}...`);
+    setStatus(`${label}...`, "info");
     await action();
-    setStatus(`${label} complete.`);
+    setStatus(`${label} complete.`, "success");
   } catch (error) {
-    setStatus(`${label} failed: ${error.message}`);
+    setStatus(`${label} failed: ${error.message}`, "error");
   }
 }
 
@@ -690,22 +726,6 @@ function wireEvents() {
       state.route.project.name,
       state.route.subcontractor.name
     );
-  });
-
-  document.getElementById("patchContacts").addEventListener("click", async () => {
-    await withBusy("Patch contacts", async () => {
-      syncConfigFromUI();
-      const result = await patchSelectedCompanyContactsIfMissing();
-      setStatus(result.reason);
-    });
-  });
-
-  document.getElementById("updateResponseItem").addEventListener("click", async () => {
-    await withBusy("Update response status", async () => {
-      syncConfigFromUI();
-      const result = await patchResponseListItems();
-      setStatus(result.reason);
-    });
   });
 
   document.getElementById("addListItem").addEventListener("click", async () => {
