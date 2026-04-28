@@ -6,7 +6,9 @@ import {
   signIn,
   updateListItemFields,
   uploadBytesToLibrary,
-  uploadToLibrary,
+  uploadBytesToFolderById,
+  resolveUploadFolderByItemId,
+  resolveUploadFolderByPath,
 } from "./graphClient";
 import { getAttachmentBytes, getMessageContext, hasOutlookContext } from "./outlookContext";
 import { resolveRoute, resolveItbMatch } from "./routingEngine";
@@ -82,7 +84,7 @@ function getCompanyRecordById(companyId) {
 
 function buildFolderPathFromRouteTemplate(projectName, companyName) {
   const template =
-    state.config.folderTemplate || "Bids/Current/{project}/Subcontractors/{subcontractor}";
+    state.config.folderTemplate || "Estimating Dashboard/Bids/Current/{project}/Subcontractors/{subcontractor}";
 
   const sanitize = (value, fallback) =>
     String(value || fallback || "Unknown")
@@ -103,30 +105,128 @@ function sanitizeFileName(value) {
     .replace(/^[-\s]+|[-\s]+$/g, "");
 }
 
-function buildUploadFileName(originalName, companyName, projectTitle) {
+function buildUploadFileName(originalName, companyName, projectTitle, attachmentIndex = null) {
   const extensionMatch = originalName.match(/(\.[^.]*)$/);
   const extension = extensionMatch ? extensionMatch[1] : "";
-  const baseName = extensionMatch ? originalName.slice(0, -extension.length) : originalName;
-
-  const companySegment = sanitizeFileName(companyName || "Company");
-  const projectSegment = sanitizeFileName(projectTitle || baseName || "Proposal");
   const dateSegment = new Date().toISOString().slice(0, 10);
+  const indexSegment = attachmentIndex ? ` - ${attachmentIndex}` : "";
 
-  const candidate = `${companySegment} - ${projectSegment} - ${dateSegment}${extension}`;
-  const maxLength = 100;
-  if (candidate.length <= maxLength) {
-    return candidate;
+  return `Proposal - ${dateSegment}${indexSegment}${extension}`;
+}
+
+// Field names to check in the project list for the SharePoint drive item ID
+const PROJECT_FOLDER_ID_KEYS = [
+  "FolderID", "FolderId", "folderid", "ItemId", "DriveItemId",
+];
+
+// Field names to check in the project list for the SharePoint folder path
+const PROJECT_FOLDER_PATH_KEYS = [
+  "FilePath", "FolderPath", "ProjectFolder", "BidFolder", "LibraryPath",
+  "SharePointPath", "ProjectPath", "BidPath", "FolderLocation", "Path",
+];
+
+// Field names to check in the ITB item for the owner / GC name
+const ITB_OWNER_KEYS = [
+  "Owner", "OwnerCompany", "GC", "GeneralContractor", "Client", "ClientName",
+];
+
+function normalizeTypeToFolder(typeValue) {
+  const t = String(typeValue || "").trim().toLowerCase();
+  if (t.startsWith("sub")) return "Subcontractors";
+  if (t.startsWith("vend")) return "Vendors";
+  // Unknown type: use the raw value or fall back to Subcontractors
+  return String(typeValue || "").trim() || "Subcontractors";
+}
+
+// Converts a raw folder path value from SharePoint metadata into a drive-relative path.
+// Handles full URLs, server-relative URLs, and plain relative paths.
+function extractDriveRelativePath(rawPath) {
+  if (!rawPath) return null;
+  const path = String(rawPath).replace(/\\/g, "/").trim();
+
+  if (path.startsWith("http")) {
+    // Full URL — strip up through /{library}/ to get drive-relative portion
+    // e.g. https://tenant.sharepoint.com/sites/SiteName/LibraryName/Folder/Sub
+    const match = path.match(/\/sites\/[^/]+\/[^/]+\/(.*)/);
+    return match ? decodeURIComponent(match[1]) : null;
   }
 
-  const truncatedCompany = companySegment.slice(0, 30);
-  const truncatedProject = projectSegment.slice(0, 40);
-  const fallback = `${truncatedCompany} - ${truncatedProject} - ${dateSegment}${extension}`;
-  if (fallback.length <= maxLength) {
-    return fallback;
+  if (path.startsWith("/sites/")) {
+    const match = path.match(/\/sites\/[^/]+\/[^/]+\/(.*)/);
+    return match ? decodeURIComponent(match[1]) : null;
   }
 
-  const shortCompany = companySegment.slice(0, 20);
-  return `${shortCompany} - ${dateSegment}${extension}`;
+  // Already a relative path (no leading slash)
+  if (!path.startsWith("/")) return path;
+
+  return null;
+}
+
+// Tries up to four strategies to locate the existing project folder, then
+// returns the company subfolder's drive item ID (creating it only if needed).
+// Returns null if the folder cannot be found — caller falls back to path-based upload.
+async function findUploadFolderId(typeFolder, companyName) {
+  const projectListItemId = state.route?.project?.id || null;
+  const projectRecord = projectListItemId
+    ? state.projects.find((r) => r.id === projectListItemId)
+    : null;
+
+  const projectFields = projectRecord?.fields || {};
+
+  // Strategy 0 (primary): FolderID field — direct SharePoint item ID, most reliable.
+  const folderIdKey = resolveFirstExistingFieldKey(projectFields, PROJECT_FOLDER_ID_KEYS);
+  const projectFolderItemId = folderIdKey ? String(projectFields[folderIdKey] || "").trim() : null;
+  if (projectFolderItemId) {
+    try {
+      const id = await resolveUploadFolderByItemId(state.config, projectFolderItemId, typeFolder, companyName);
+      if (id) return id;
+    } catch { /* fall through */ }
+  }
+
+  // Strategy 1: FilePath field — drive-relative path stored in project list metadata.
+  const pathKey = resolveFirstExistingFieldKey(projectFields, PROJECT_FOLDER_PATH_KEYS);
+  const rawPath = pathKey ? projectFields[pathKey] : null;
+  const cleanPath = extractDriveRelativePath(rawPath);
+  if (cleanPath) {
+    try {
+      const id = await resolveUploadFolderByPath(state.config, cleanPath, typeFolder, companyName);
+      if (id) return id;
+    } catch { /* fall through */ }
+  }
+
+  return null;
+}
+
+// Builds the upload folder path from the ITB match, using the Vendor/Sub type
+// from the ITB row to set the middle path segment instead of the template default.
+// Result: {template prefix}/{project}/{Vendors or Subcontractors}/{company}
+function buildItbFolderPath(projectName, typeValue, companyName, ownerName) {
+  const template = state.config.folderTemplate || "Estimating Dashboard/Bids/Current/{project}/Subcontractors/{subcontractor}";
+  const sanitize = (v, fallback) =>
+    String(v || fallback || "Unknown")
+      .replace(/[\\/:*?"<>|]/g, "-")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const normalized = (value) => String(value || "").trim().toLowerCase();
+  const projectSegment = ownerName && !normalized(projectName).startsWith(normalized(ownerName))
+    ? `${ownerName} - ${projectName}`
+    : projectName;
+
+  // Extract the static prefix before {project} (e.g. "Bids/Current/")
+  const projectIdx = template.indexOf("{project}");
+  const prefix = projectIdx >= 0 ? template.slice(0, projectIdx).replace(/\/+$/, "") : "";
+
+  const typeFolder = normalizeTypeToFolder(typeValue);
+
+  return [
+    prefix,
+    sanitize(projectSegment, "Unmapped Project"),
+    typeFolder,
+    sanitize(companyName, "Unknown"),
+  ]
+    .filter(Boolean)
+    .join("/");
 }
 
 function buildCompanySelectOptions(route) {
@@ -408,12 +508,9 @@ function createApp() {
           <label>Drive ID
             <input id="driveId" value="${state.config.driveId || ""}" />
           </label>
-          <label>Default library folder
-            <input id="libraryFolder" value="${state.config.libraryFolder || "Shared Documents"}" />
-          </label>
           <label>Folder template
             <input id="folderTemplate" value="${
-              state.config.folderTemplate || "Bids/Current/{project}/Subcontractors/{subcontractor}"
+              state.config.folderTemplate || "Estimating Dashboard/Bids/Current/{project}/Subcontractors/{subcontractor}"
             }" />
           </label>
         </div>
@@ -454,7 +551,6 @@ function syncConfigFromUI() {
     responseListId: document.getElementById("responseListId").value.trim(),
     renameUploadFiles: document.getElementById("renameUploadFiles").checked,
     driveId: document.getElementById("driveId").value.trim(),
-    libraryFolder: document.getElementById("libraryFolder").value.trim(),
     folderTemplate: document.getElementById("folderTemplate").value.trim(),
   };
 }
@@ -530,16 +626,19 @@ async function runAutoMatch() {
   }
 
   // Override project name and folder path with the ITB match when found.
-  // The subcontractor name still comes from the company list for accurate folder naming.
+  // Keep the project list item ID from resolveRoute — that's what points to the
+  // FilePath field. Only the display name comes from the ITB row.
   if (state.itbMatch) {
     state.route.project = {
-      id: state.itbMatch.item.id,
-      name: state.itbMatch.projectName,
+      id: state.route.project.id,        // project list item ID — needed for FilePath lookup
+      name: state.itbMatch.projectName,  // display name from the ITB row (more authoritative)
       score: state.itbMatch.emailScore + state.itbMatch.titleScore,
     };
-    state.route.folderPath = buildFolderPathFromRouteTemplate(
+    state.route.folderPath = buildItbFolderPath(
       state.itbMatch.projectName,
-      state.route.subcontractor.name
+      state.itbMatch.typeValue,
+      state.route.subcontractor.name,
+      state.itbMatch.ownerName
     );
     state.route.confidence = state.itbMatch.confidence;
     state.route.reason = `ITB/RFQ matched on recipient email + title (${state.itbMatch.confidence}% confidence)`;
@@ -549,14 +648,29 @@ async function runAutoMatch() {
 function applySelectedCompanyOverride() {
   if (!state.route) return;
 
-  if (!state.selectedCompanyId) {
-    state.route = resolveRoute(state.messageContext, state.projects, state.companies, state.config);
-    return;
-  }
+  state.route = resolveRoute(
+    state.messageContext,
+    state.projects,
+    state.companies,
+    state.config,
+    state.selectedCompanyId ? { companyIdOverride: state.selectedCompanyId } : undefined
+  );
 
-  state.route = resolveRoute(state.messageContext, state.projects, state.companies, state.config, {
-    companyIdOverride: state.selectedCompanyId,
-  });
+  // Re-apply ITB folder path so changing the company dropdown keeps the correct type segment.
+  // Preserve the project list item ID — only the display name comes from the ITB row.
+  if (state.itbMatch) {
+    state.route.project = {
+      id: state.route.project.id,
+      name: state.itbMatch.projectName,
+      score: state.itbMatch.emailScore + state.itbMatch.titleScore,
+    };
+    state.route.folderPath = buildItbFolderPath(
+      state.itbMatch.projectName,
+      state.itbMatch.typeValue,
+      state.route.subcontractor.name,
+      state.itbMatch.ownerName
+    );
+  }
 }
 
 async function patchSelectedCompanyContactsIfMissing() {
@@ -587,13 +701,8 @@ async function patchSelectedCompanyContactsIfMissing() {
 async function uploadSelected() {
   syncConfigFromUI();
 
-  const destination =
-    document.getElementById("resolvedFolderPath").value.trim() ||
-    state.route?.folderPath ||
-    state.config.libraryFolder;
-
-  if (!destination) {
-    throw new Error("Destination folder is required.");
+  if (!hasOutlookContext()) {
+    throw new Error("Open this add-in from an Outlook message to access attachments.");
   }
 
   if (!state.messageContext) {
@@ -604,37 +713,54 @@ async function uploadSelected() {
     await runAutoMatch();
   }
 
-  const projectTitle = parseProjectTitleFromSubject(state.messageContext?.subject || "") || state.route?.project?.name;
-  const companyName = state.route?.subcontractor?.name || "Company";
+  const destination =
+    document.getElementById("resolvedFolderPath").value.trim() ||
+    state.route?.folderPath;
 
-  const contactResult = await patchSelectedCompanyContactsIfMissing();
-  const responseResult = await updateItbMatchStatus();
-
-  const uploads = [];
-
-  if (!hasOutlookContext()) {
-    throw new Error("Outlook attachments are required for upload.");
+  if (!destination) {
+    throw new Error("Destination folder is required. Run Auto-match or enter a folder path.");
   }
 
   const selectedIds = [...state.selectedAttachmentIds];
   const selected = state.messageContext.attachments.filter((item) => selectedIds.includes(item.id));
 
   if (selected.length === 0) {
-    throw new Error("Select at least one Outlook attachment.");
+    throw new Error("Select at least one attachment before uploading.");
   }
 
-  for (const attachment of selected) {
+  const projectTitle =
+    parseProjectTitleFromSubject(state.messageContext?.subject || "") ||
+    state.route?.project?.name;
+  const companyName = state.route?.subcontractor?.name || "Company";
+
+  // Locate the existing project folder in SharePoint rather than constructing
+  // a path from the template, which risks creating a duplicate project folder.
+  let uploadFolderId = null;
+  if (state.itbMatch) {
+    const typeFolder = normalizeTypeToFolder(state.itbMatch.typeValue);
+    const sanitizedCompany = sanitizeFileName(companyName);
+    setStatus("Locating project folder in SharePoint…", "info");
+    uploadFolderId = await findUploadFolderId(typeFolder, sanitizedCompany);
+    if (!uploadFolderId) {
+      setStatus("Existing folder not found — uploading to configured template path.", "info");
+    }
+  }
+
+  // Upload files — primary action, must succeed before anything else runs
+  const uploads = [];
+
+  for (let index = 0; index < selected.length; index += 1) {
+    const attachment = selected[index];
     const bytes = await getAttachmentBytes(attachment.id);
-    const uploadName = state.config.renameUploadFiles
-      ? buildUploadFileName(attachment.name, companyName, projectTitle)
+    const pathTooLong = destination.length + 1 + attachment.name.length > 260;
+    const uploadName = pathTooLong
+      ? buildUploadFileName(attachment.name, companyName, projectTitle, selected.length > 1 ? index + 1 : null)
       : attachment.name;
-    const response = await uploadBytesToLibrary(
-      state.config,
-      uploadName,
-      bytes,
-      destination,
-      "application/octet-stream"
-    );
+
+    const targetPath = uploadFolderId ? null : destination;
+    const response = uploadFolderId
+      ? await uploadBytesToFolderById(state.config, uploadName, bytes, uploadFolderId, "application/octet-stream")
+      : await uploadBytesToLibrary(state.config, uploadName, bytes, targetPath, "application/octet-stream");
 
     uploads.push({
       source: "outlook",
@@ -643,33 +769,36 @@ async function uploadSelected() {
     });
   }
 
-  if (contactResult.updated) {
-    uploads.unshift({
-      source: "company-list",
-      fileName: "contact backfill",
-      webUrl: contactResult.reason,
-    });
-  }
-
-  if (responseResult.updated) {
-    uploads.push({
-      source: "response-list",
-      fileName: "response update",
-      webUrl: responseResult.reason,
-    });
-  }
-
   state.uploadResults = uploads;
-  setOutput("fileOutput", uploads);
 
-  const summary = [
-    "Upload complete.",
-    contactResult.reason,
-    responseResult.reason,
-  ]
-    .filter(Boolean)
-    .join(" ");
-  setStatus(summary, "success");
+  const outputEl = document.getElementById("fileOutput");
+  if (outputEl) {
+    outputEl.textContent = JSON.stringify(uploads, null, 2);
+    outputEl.classList.remove("hidden-panel");
+  }
+
+  // Side effects run after the upload so they never block it.
+  // Failures are reported in the status banner but don't undo the upload.
+  const notes = [];
+
+  try {
+    const contactResult = await patchSelectedCompanyContactsIfMissing();
+    if (contactResult.updated) notes.push(contactResult.reason);
+  } catch (err) {
+    notes.push(`Contact backfill skipped: ${err.message}`);
+  }
+
+  try {
+    const responseResult = await updateItbMatchStatus();
+    if (responseResult.updated) notes.push(responseResult.reason);
+  } catch (err) {
+    notes.push(`ITB status update skipped: ${err.message}`);
+  }
+
+  setStatus(
+    [`${uploads.length} file(s) uploaded to ${destination}.`, ...notes].join(" "),
+    "success"
+  );
 }
 
 async function withBusy(label, action) {
@@ -721,11 +850,7 @@ function wireEvents() {
   document.getElementById("companySelect").addEventListener("change", (event) => {
     state.selectedCompanyId = event.target.value;
     applySelectedCompanyOverride();
-    const folderInput = document.getElementById("resolvedFolderPath");
-    folderInput.value = buildFolderPathFromRouteTemplate(
-      state.route.project.name,
-      state.route.subcontractor.name
-    );
+    document.getElementById("resolvedFolderPath").value = state.route.folderPath;
   });
 
   document.getElementById("addListItem").addEventListener("click", async () => {

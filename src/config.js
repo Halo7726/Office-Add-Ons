@@ -7,10 +7,9 @@ const fromEnv = {
   responseListId: import.meta.env.VITE_RESPONSE_LIST_ID || "",
   renameUploadFiles: import.meta.env.VITE_RENAME_UPLOAD_FILES !== "false",
   driveId: import.meta.env.VITE_DRIVE_ID || "",
-  libraryFolder: import.meta.env.VITE_LIBRARY_FOLDER || "Shared Documents/Incoming",
   folderTemplate:
     import.meta.env.VITE_FOLDER_TEMPLATE ||
-    "Bids/Current/{project}/Subcontractors/{subcontractor}",
+    "Estimating Dashboard/Bids/Current/{project}/Subcontractors/{subcontractor}",
 };
 
 const STORAGE_KEY = "sp-outlook-addin-config";

@@ -194,8 +194,7 @@ export async function uploadToLibrary(config, file) {
     throw new Error("Site ID and Drive ID are required to upload files.");
   }
 
-  const folder = (config.libraryFolder || "Shared Documents").replace(/^\/+|\/+$/g, "");
-  return uploadBytesToLibrary(config, file.name, file, folder, file.type || "application/octet-stream");
+  return uploadBytesToLibrary(config, file.name, file, "", file.type || "application/octet-stream");
 }
 
 async function getDriveRoot(config) {
@@ -222,6 +221,153 @@ async function ensureFolder(config, parentId, folderName) {
       }),
     });
   }
+}
+
+// Returns the child folder of parentId whose name matches folderName (case-insensitive), or null.
+async function getChildFolderByName(config, parentId, folderName) {
+  try {
+    const results = await graphRequest(
+      config,
+      `/sites/${config.siteId}/drives/${config.driveId}/items/${parentId}/children`,
+      { method: "GET" }
+    );
+    const lower = folderName.toLowerCase();
+    return (results?.value || []).find(
+      (item) => item.folder !== undefined && item.name.toLowerCase() === lower
+    ) || null;
+  } catch {
+    return null;
+  }
+}
+
+// Searches the entire drive for a folder whose name exactly matches folderName.
+async function searchDriveForFolder(config, folderName) {
+  try {
+    const q = encodeURIComponent(`"${folderName}"`);
+    const results = await graphRequest(
+      config,
+      `/sites/${config.siteId}/drives/${config.driveId}/root/search(q=${q})`,
+      { method: "GET" }
+    );
+    const lower = folderName.toLowerCase();
+    return (results?.value || []).find(
+      (item) => item.folder !== undefined && item.name.toLowerCase() === lower
+    ) || null;
+  } catch {
+    return null;
+  }
+}
+
+// Navigate to the project folder at projectFolderPath (drive-relative), then find
+// the existing typeFolder (Vendors/Subcontractors) inside it, then find or create
+// the companyName subfolder. Returns the company folder's item ID, or null if the
+// project folder or type folder is not found.
+export async function resolveUploadFolderByPath(config, projectFolderPath, typeFolder, companyName) {
+  const encodedPath = projectFolderPath.split("/").map(encodeURIComponent).join("/");
+  let projectItem;
+  try {
+    projectItem = await graphRequest(
+      config,
+      `/sites/${config.siteId}/drives/${config.driveId}/items/root:/${encodedPath}`,
+      { method: "GET" }
+    );
+  } catch {
+    return null;
+  }
+
+  const typeItem = await getChildFolderByName(config, projectItem.id, typeFolder);
+  if (!typeItem) return null;
+
+  const companyItem = await getChildFolderByName(config, typeItem.id, companyName);
+  if (companyItem) return companyItem.id;
+
+  const created = await graphRequest(
+    config,
+    `/sites/${config.siteId}/drives/${config.driveId}/items/${typeItem.id}/children`,
+    {
+      method: "POST",
+      body: JSON.stringify({ name: companyName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" }),
+    }
+  );
+  return created.id;
+}
+
+// Uses a direct SharePoint drive item ID (from the project list's FolderID field) to
+// navigate into the type subfolder (must already exist), then find or create the company
+// subfolder inside it. Returns the company folder's item ID.
+export async function resolveUploadFolderByItemId(config, projectItemId, typeFolder, companyName) {
+  const typeItem = await getChildFolderByName(config, projectItemId, typeFolder);
+  if (!typeItem) {
+    throw new Error(`"${typeFolder}" folder not found inside project folder.`);
+  }
+
+  const companyItem = await getChildFolderByName(config, typeItem.id, companyName);
+  if (companyItem) return companyItem.id;
+
+  const created = await graphRequest(
+    config,
+    `/sites/${config.siteId}/drives/${config.driveId}/items/${typeItem.id}/children`,
+    {
+      method: "POST",
+      body: JSON.stringify({ name: companyName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" }),
+    }
+  );
+  return created.id;
+}
+
+// Same as resolveUploadFolderByPath but locates the project folder via drive search
+// instead of a known path. Used when the exact folder path is unknown.
+export async function resolveUploadFolderBySearch(config, projectFolderName, typeFolder, companyName) {
+  const projectItem = await searchDriveForFolder(config, projectFolderName);
+  if (!projectItem) return null;
+
+  const typeItem = await getChildFolderByName(config, projectItem.id, typeFolder);
+  if (!typeItem) return null;
+
+  const companyItem = await getChildFolderByName(config, typeItem.id, companyName);
+  if (companyItem) return companyItem.id;
+
+  const created = await graphRequest(
+    config,
+    `/sites/${config.siteId}/drives/${config.driveId}/items/${typeItem.id}/children`,
+    {
+      method: "POST",
+      body: JSON.stringify({ name: companyName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" }),
+    }
+  );
+  return created.id;
+}
+
+// Upload directly to a folder by its drive item ID instead of by path.
+export async function uploadBytesToFolderById(
+  config,
+  fileName,
+  data,
+  folderId,
+  contentType = "application/octet-stream"
+) {
+  if (!config.siteId || !config.driveId) {
+    throw new Error("Site ID and Drive ID are required to upload files.");
+  }
+
+  const uploadPath = `/sites/${config.siteId}/drives/${config.driveId}/items/${folderId}:/${encodeURIComponent(fileName)}:/content`;
+  const accessToken = await getAccessToken(config);
+
+  const response = await fetch(`https://graph.microsoft.com/v1.0${uploadPath}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": contentType,
+    },
+    body: data,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`File upload failed (${response.status}): ${errorText}`);
+  }
+
+  return response.json();
 }
 
 export async function ensureLibraryPath(config, folderPath) {
@@ -251,11 +397,13 @@ export async function uploadBytesToLibrary(
     throw new Error("Site ID and Drive ID are required to upload files.");
   }
 
-  const folder = (folderPath || config.libraryFolder || "Shared Documents").replace(/^\/+|\/+$/g, "");
+  const folder = (folderPath || "").replace(/^\/+|\/+$/g, "");
   await ensureLibraryPath(config, folder);
 
-  const encodedFolder = folder.split("/").map(encodeURIComponent).join("/");
-  const uploadPath = `/sites/${config.siteId}/drives/${config.driveId}/items/root:/${encodedFolder}/${encodeURIComponent(fileName)}:/content`;
+  const encodedFile = encodeURIComponent(fileName);
+  const uploadPath = folder
+    ? `/sites/${config.siteId}/drives/${config.driveId}/items/root:/${folder.split("/").map(encodeURIComponent).join("/")}/${encodedFile}:/content`
+    : `/sites/${config.siteId}/drives/${config.driveId}/items/root:/${encodedFile}:/content`;
   const accessToken = await getAccessToken(config);
 
   const response = await fetch(`https://graph.microsoft.com/v1.0${uploadPath}`, {

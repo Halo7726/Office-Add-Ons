@@ -108,6 +108,25 @@ const ITB_EMAIL_SUBJECT_KEYS = [
   "ITBSubject",
 ];
 
+const ITB_OWNER_KEYS = [
+  "Owner",
+  "OwnerCompany",
+  "GC",
+  "GeneralContractor",
+  "Client",
+  "ClientName",
+];
+
+const ITB_TYPE_KEYS = [
+  "Vendor or Subcontractor",
+  "VendorOrSubcontractor",
+  "Vendor or Sub",
+  "VendorOrSub",
+  "Type",
+  "VendorType",
+  "SubType",
+];
+
 export function resolveRoute(messageContext, projects, companies, config, options = {}) {
   const subject = messageContext?.subject || "";
   const from = messageContext?.from || "";
@@ -144,7 +163,7 @@ export function resolveRoute(messageContext, projects, companies, config, option
   const subcontractorName = companyMatch ? chooseDisplayName(companyMatch.record) : "Unmapped Subcontractor";
 
   const template =
-    config.folderTemplate || "Bids/Current/{project}/Subcontractors/{subcontractor}";
+    config.folderTemplate || "Estimating Dashboard/Bids/Current/{project}/Subcontractors/{subcontractor}";
 
   const folderPath = template
     .replaceAll("{project}", sanitizeSegment(projectName, "Unmapped Project"))
@@ -246,12 +265,20 @@ export function resolveItbMatch(messageContext, itbItems, config) {
   const fields = best.item.fields || {};
   const projectName = fields.Title || fields.ProjectName || fields.ProjectCode || "(Unnamed Project)";
 
+  const ownerKey = findFieldKey(fields, ITB_OWNER_KEYS);
+  const ownerName = ownerKey ? String(fields[ownerKey] || "").trim() : null;
+
+  const typeKey = findFieldKey(fields, ITB_TYPE_KEYS);
+  const typeValue = typeKey ? String(fields[typeKey] || "").trim() : null;
+
   // confidence weighs email match heavily since it's the strong identifier
   const confidence = Math.min(95, Math.round(best.emailScore * 0.65 + best.titleScore * 0.35));
 
   return {
     item: best.item,
     projectName,
+    ownerName,
+    typeValue,
     emailScore: best.emailScore,
     titleScore: best.titleScore,
     confidence,
