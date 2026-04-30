@@ -292,3 +292,112 @@ select:disabled {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+/* ── Template manager ─────────────────────────────────────────────────────── */
+
+.btn-sm {
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.panel-header h2 {
+  margin: 0;
+}
+
+.template-list {
+  margin-top: var(--space2);
+  display: grid;
+  gap: 6px;
+}
+
+.template-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space2);
+  padding: var(--space2);
+  border: 1px solid var(--colorNeutralStroke2);
+  border-radius: var(--radiusSmall);
+  background: var(--colorNeutralBackground2);
+}
+
+.template-item-info {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.template-item-info strong {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.template-item-info span {
+  font-size: 11px;
+  color: var(--colorNeutralForeground3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.template-item-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.template-edit-form {
+  margin-top: var(--space3);
+  padding-top: var(--space3);
+  border-top: 1px solid var(--colorNeutralStroke2);
+}
+
+.template-edit-form h3 {
+  margin: 0 0 var(--space2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--colorNeutralForeground2);
+}
+
+.token-ref {
+  margin-top: var(--space2);
+  font-size: 12px;
+  color: var(--colorNeutralForeground2);
+}
+
+.token-ref summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 4px 0;
+}
+
+.token-ref ul {
+  margin: var(--space2) 0 0;
+  padding-left: var(--space3);
+  display: grid;
+  gap: 4px;
+  list-style: none;
+}
+
+.token-ref li {
+  padding: 0;
+}
+
+.token-ref code {
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 11px;
+  background: var(--colorNeutralBackground3);
+  border: 1px solid var(--colorNeutralStroke2);
+  border-radius: 3px;
+  padding: 1px 4px;
+  color: var(--colorBrandForeground1);
+}

@@ -19,6 +19,7 @@ export default defineConfig({
       input: {
         main: path.resolve(__dirname, 'index.html'),
         authDialog: path.resolve(__dirname, 'auth-dialog.html'),
+        compose: path.resolve(__dirname, 'compose.html'),
       },
     },
   },
