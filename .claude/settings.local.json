@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Github Repos\\\\Office-Add-Ons\" -Recurse -Force)",
+      "Bash(Select-Object -First 20)"
     ]
   }
 }

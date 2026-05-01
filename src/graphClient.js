@@ -56,6 +56,13 @@ function loginWithOfficeDialog(config) {
           try {
             const msg = JSON.parse(arg.message);
             if (msg.type === "done") {
+              // Import the MSAL cache from the dialog's isolated browser context
+              // into this window's localStorage so a fresh MSAL instance can find it.
+              if (msg.cache) {
+                for (const [key, value] of Object.entries(msg.cache)) {
+                  localStorage.setItem(key, value);
+                }
+              }
               resolve();
             } else {
               reject(new Error(msg.message || "Authentication failed in dialog."));
@@ -78,11 +85,16 @@ function loginWithOfficeDialog(config) {
 async function interactiveLogin(config, client) {
   if (window.Office?.context?.ui) {
     await loginWithOfficeDialog(config);
-    const accounts = client.getAllAccounts();
+    // The dialog wrote its MSAL cache into our localStorage above. Reset the
+    // cached client so ensureClient creates a fresh instance that reads it.
+    msalClient = null;
+    const freshClient = ensureClient(config);
+    await freshClient.initialize();
+    const accounts = freshClient.getAllAccounts();
     if (accounts.length === 0) {
       throw new Error("Authentication completed but no account was found in cache.");
     }
-    client.setActiveAccount(accounts[0]);
+    freshClient.setActiveAccount(accounts[0]);
     return accounts[0];
   }
 
@@ -111,16 +123,16 @@ async function getAccessToken(config) {
   let account = client.getActiveAccount();
   if (!account) {
     await interactiveLogin(config, client);
-    account = client.getActiveAccount();
+    account = ensureClient(config).getActiveAccount();
   }
 
   try {
-    const token = await client.acquireTokenSilent({ account, scopes: SCOPES });
+    const token = await ensureClient(config).acquireTokenSilent({ account, scopes: SCOPES });
     return token.accessToken;
   } catch {
     await interactiveLogin(config, client);
-    const freshAccount = client.getActiveAccount();
-    const token = await client.acquireTokenSilent({ account: freshAccount, scopes: SCOPES });
+    const freshAccount = ensureClient(config).getActiveAccount();
+    const token = await ensureClient(config).acquireTokenSilent({ account: freshAccount, scopes: SCOPES });
     return token.accessToken;
   }
 }

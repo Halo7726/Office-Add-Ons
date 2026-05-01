@@ -231,6 +231,25 @@ button:focus-visible {
   flex-wrap: wrap;
 }
 
+.new-company-form {
+  margin-top: var(--space2);
+  padding: var(--space2);
+  border: 1px solid var(--colorNeutralStroke1);
+  border-radius: var(--radiusSmall);
+  background: var(--colorNeutralBackground2);
+}
+
+.new-company-form h3 {
+  margin: 0 0 var(--space2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--colorNeutralForeground2);
+}
+
+.new-company-form .grid {
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+}
+
 button {
   min-height: 32px;
   border-radius: var(--radiusSmall);

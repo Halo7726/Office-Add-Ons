@@ -19,7 +19,10 @@ export function loadConfig() {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return fromEnv;
     const parsed = JSON.parse(raw);
-    return { ...fromEnv, ...parsed };
+    const overrides = Object.fromEntries(
+      Object.entries(parsed).filter(([, v]) => v !== null && v !== undefined && v !== "")
+    );
+    return { ...fromEnv, ...overrides };
   } catch {
     return fromEnv;
   }

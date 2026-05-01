@@ -23,9 +23,11 @@ const state = {
   itbMatch: null,
   route: null,
   selectedCompanyId: "",
+  selectedProjectId: "",
   selectedAttachmentIds: new Set(),
   uploadResults: [],
   showSettings: false,
+  showNewCompanyForm: false,
   statusMessage: "Ready.",
   statusType: "info",
 };
@@ -80,6 +82,22 @@ function resolveFirstExistingFieldKey(fields, desiredNames = []) {
 function getCompanyRecordById(companyId) {
   if (!companyId) return null;
   return state.companies.find((record) => record.id === companyId) || null;
+}
+
+function getProjectDisplayName(record) {
+  return record?.fields?.Title || record?.fields?.ProjectName || record?.fields?.ProjectCode || "(Unnamed)";
+}
+
+function buildProjectSelectOptions() {
+  const activeId = state.selectedProjectId || state.route?.project?.id || "";
+  return [...state.projects]
+    .sort((a, b) => getProjectDisplayName(a).localeCompare(getProjectDisplayName(b)))
+    .map((p) => {
+      const name = getProjectDisplayName(p);
+      const selected = p.id === activeId ? "selected" : "";
+      return `<option value="${escapeHtml(p.id)}" ${selected}>${escapeHtml(name)}</option>`;
+    })
+    .join("");
 }
 
 function buildFolderPathFromRouteTemplate(projectName, companyName) {
@@ -231,19 +249,77 @@ function buildItbFolderPath(projectName, typeValue, companyName, ownerName) {
 
 function buildCompanySelectOptions(route) {
   const candidates = route?.companyCandidates || [];
+  const parts = [];
 
-  if (candidates.length === 0) {
-    return '<option value="">No confident company match</option>';
+  // If a company was just created and selected but isn't in scored candidates yet, show it first
+  if (
+    state.selectedCompanyId &&
+    state.selectedCompanyId !== "__new__" &&
+    !candidates.some((c) => c.id === state.selectedCompanyId)
+  ) {
+    const rec = getCompanyRecordById(state.selectedCompanyId);
+    if (rec) {
+      const name = rec.fields?.Title || rec.fields?.CompanyName || "New Company";
+      parts.push(`<option value="${escapeHtml(state.selectedCompanyId)}" selected>${escapeHtml(name)}</option>`);
+    }
   }
 
-  return candidates
-    .map((candidate) => {
-      const selected = candidate.id === state.selectedCompanyId ? "selected" : "";
-      return `<option value="${escapeHtml(candidate.id)}" ${selected}>${escapeHtml(
-        candidate.name
-      )} (${candidate.score})</option>`;
-    })
-    .join("");
+  if (candidates.length === 0 && parts.length === 0) {
+    parts.push('<option value="">No confident company match</option>');
+  }
+
+  for (const candidate of candidates) {
+    const selected = !state.showNewCompanyForm && candidate.id === state.selectedCompanyId ? "selected" : "";
+    parts.push(
+      `<option value="${escapeHtml(candidate.id)}" ${selected}>${escapeHtml(candidate.name)} (${candidate.score})</option>`
+    );
+  }
+
+  parts.push(`<option value="__new__" ${state.showNewCompanyForm ? "selected" : ""}>— Create new company —</option>`);
+  return parts.join("");
+}
+
+// Returns the actual SharePoint field key for the first candidate name found in any existing company record.
+function inferCompanyFieldKey(desiredNames) {
+  for (const company of state.companies) {
+    const key = resolveFirstExistingFieldKey(company.fields || {}, desiredNames);
+    if (key) return key;
+  }
+  return desiredNames[0];
+}
+
+function buildNewCompanyForm() {
+  const fromEmail = state.messageContext?.from || "";
+  const contactName = fromEmail ? emailToDisplayName(fromEmail) : "";
+  return `
+    <div class="new-company-form">
+      <h3>New Company</h3>
+      <div class="grid">
+        <label>Company Name *
+          <input id="newCompanyName" placeholder="Enter company name" />
+        </label>
+        <label>Contact Name
+          <input id="newContactName1" value="${escapeHtml(contactName)}" />
+        </label>
+        <label>Contact Title
+          <input id="newContactTitle1" value="Estimator" />
+        </label>
+        <label>Email
+          <input id="newEmail1" type="email" value="${escapeHtml(fromEmail)}" />
+        </label>
+        <label>Direct Line
+          <input id="newDirectLine1" placeholder="N/A" />
+        </label>
+        <label>Mobile
+          <input id="newMobile1" placeholder="N/A" />
+        </label>
+      </div>
+      <div class="actions">
+        <button id="createCompany" class="btn-primary">Save to SharePoint</button>
+        <button id="cancelNewCompany" class="btn-secondary">Cancel</button>
+      </div>
+    </div>
+  `;
 }
 
 function buildCompanyContactPatch(companyRecord, fromEmail) {
@@ -452,12 +528,30 @@ function createApp() {
             <small>${route.reason}</small>
           </article>
         </div>
-        <label>Destination folder (SharePoint path)
-          <input id="resolvedFolderPath" value="${route.folderPath || ""}" />
-        </label>
+        ${(() => {
+          const noMatch = state.projects.length > 0 && !route.project.id;
+          if (noMatch) {
+            const pathPreview = state.selectedProjectId ? (route.folderPath || "") : "";
+            return `
+              <label>Project
+                <select id="projectSelect">
+                  <option value="">— Select a project —</option>
+                  ${buildProjectSelectOptions()}
+                </select>
+              </label>
+              <label>Destination folder
+                <input id="resolvedFolderPath" readonly value="${escapeHtml(pathPreview)}" placeholder="Select a project above" />
+              </label>`;
+          }
+          return `
+            <label>Destination folder (SharePoint path)
+              <input id="resolvedFolderPath" value="${escapeHtml(route.folderPath || "")}" />
+            </label>`;
+        })()}
         <label>Subcontractor match options
           <select id="companySelect">${companyOptions}</select>
         </label>
+        ${state.showNewCompanyForm ? buildNewCompanyForm() : ""}
         <div class="actions">
           <button id="signin" class="btn-secondary">Sign in</button>
           <button id="autoMatch" class="btn-primary">Auto-match</button>
@@ -670,6 +764,18 @@ function applySelectedCompanyOverride() {
       state.route.subcontractor.name,
       state.itbMatch.ownerName
     );
+    return;
+  }
+
+  // If the user manually selected a project (no auto-match), re-apply it after resolveRoute
+  // resets state.route — resolveRoute scores against the email and may not find a match.
+  if (state.selectedProjectId && !state.route.project.id) {
+    const rec = state.projects.find((p) => p.id === state.selectedProjectId);
+    if (rec) {
+      const name = getProjectDisplayName(rec);
+      state.route.project = { id: state.selectedProjectId, name, score: 0 };
+      state.route.folderPath = buildFolderPathFromRouteTemplate(name, state.route.subcontractor.name);
+    }
   }
 }
 
@@ -696,6 +802,41 @@ async function patchSelectedCompanyContactsIfMissing() {
     reason: `Updated missing contacts for ${company.fields?.Title || "selected company"}.`,
     patch,
   };
+}
+
+async function createNewCompany() {
+  if (!state.config.companyListId) {
+    throw new Error("Company List ID is not configured in settings.");
+  }
+
+  const name = document.getElementById("newCompanyName").value.trim();
+  if (!name) throw new Error("Company name is required.");
+
+  const contact1Key = inferCompanyFieldKey(["Contact Name 1", "ContactName1", "Primary Contact", "PrimaryContact"]);
+  const title1Key   = inferCompanyFieldKey(["Contact Title 1", "ContactTitle1"]);
+  const email1Key   = inferCompanyFieldKey(["Email 1", "Email1", "Primary Contact Email", "PrimaryContactEmail"]);
+  const line1Key    = inferCompanyFieldKey(["Extension/Direct Line 1", "ExtensionDirectLine1"]);
+  const mobile1Key  = inferCompanyFieldKey(["Mobile Number 1", "MobileNumber1"]);
+
+  const fields = {
+    Title:       name,
+    [contact1Key]: document.getElementById("newContactName1").value.trim() || "N/A",
+    [title1Key]:   document.getElementById("newContactTitle1").value.trim() || "N/A",
+    [email1Key]:   document.getElementById("newEmail1").value.trim() || "N/A",
+    [line1Key]:    document.getElementById("newDirectLine1").value.trim() || "N/A",
+    [mobile1Key]:  document.getElementById("newMobile1").value.trim() || "N/A",
+  };
+
+  const result = await addListItem({ ...state.config, listId: state.config.companyListId }, fields);
+
+  const newRecord = { id: result.id, fields: { ...fields } };
+  state.companies.push(newRecord);
+  state.selectedCompanyId = result.id;
+  state.showNewCompanyForm = false;
+
+  if (state.route) {
+    applySelectedCompanyOverride();
+  }
 }
 
 async function uploadSelected() {
@@ -847,11 +988,52 @@ function wireEvents() {
     });
   });
 
+  const projectSelectEl = document.getElementById("projectSelect");
+  if (projectSelectEl) {
+    projectSelectEl.addEventListener("change", (event) => {
+      const projectId = event.target.value;
+      state.selectedProjectId = projectId;
+
+      if (!projectId || !state.route) return;
+
+      const rec = state.projects.find((p) => p.id === projectId);
+      if (!rec) return;
+
+      const name = getProjectDisplayName(rec);
+      state.route.project = { id: projectId, name, score: 0 };
+      state.route.folderPath = buildFolderPathFromRouteTemplate(name, state.route.subcontractor.name);
+      document.getElementById("resolvedFolderPath").value = state.route.folderPath;
+    });
+  }
+
   document.getElementById("companySelect").addEventListener("change", (event) => {
-    state.selectedCompanyId = event.target.value;
+    const value = event.target.value;
+    if (value === "__new__") {
+      state.showNewCompanyForm = true;
+      state.selectedCompanyId = "__new__";
+      render();
+      return;
+    }
+    state.showNewCompanyForm = false;
+    state.selectedCompanyId = value;
     applySelectedCompanyOverride();
-    document.getElementById("resolvedFolderPath").value = state.route.folderPath;
+    document.getElementById("resolvedFolderPath").value = state.route?.folderPath || "";
   });
+
+  if (state.showNewCompanyForm) {
+    document.getElementById("createCompany").addEventListener("click", async () => {
+      await withBusy("Create company", async () => {
+        await createNewCompany();
+        render();
+      });
+    });
+
+    document.getElementById("cancelNewCompany").addEventListener("click", () => {
+      state.showNewCompanyForm = false;
+      state.selectedCompanyId = state.route?.subcontractor?.id || "";
+      render();
+    });
+  }
 
   document.getElementById("addListItem").addEventListener("click", async () => {
     await withBusy("Write list record", async () => {
