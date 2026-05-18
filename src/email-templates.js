@@ -1,53 +1,91 @@
-// Email template configuration.
-//
-// Each key is a recipient type (must match the <select> values in compose.js).
-// Templates support the following tokens — all replaced at send time:
-//
-//   {{project_name}}   — project Title / ProjectName from SharePoint
-//   {{project_number}} — JobNumber / EstimateNumber from SharePoint
-//   {{company_name}}   — selected company Title / CompanyName
-//   {{contact_name}}   — company "Contact Name 1" field (falls back to company name)
-//   {{contact_email}}  — company "Email 1" field
-//   {{contact_title}}  — company "Contact Title 1" field
-//   {{today}}          — current date, e.g. "January 1, 2026"
-//   {{sender_name}}    — signed-in user's display name (from Outlook profile)
-//   {{sender_email}}   — signed-in user's email address
-
-export const emailTemplates = {
-  sub: {
-    label: "Subcontractor – Invitation to Bid",
+﻿export const emailTemplates = {
+  invitationToBid: {
+    label: "Invitation to Bid",
     subject: "Invitation to Bid – {{project_name}}",
-    body: `Dear {{contact_name}},
+    body: `Good morning,
 
-We would like to invite {{company_name}} to submit a bid for the following project:
+We would like to invite you to bid on the following project:
 
-Project:    {{project_name}}
-Project No: {{project_number}}
+Project:      {{project_name}}
+Owner:        {{owner}}
+Location:     {{project_location}}
+Bid Due:      {{bid_due_date}}
+Pre-Bid:      {{prebid_date}}
+RFI Cut-off:  {{question_due_date}}
+Plans:        {{plan_link}}
+Takeoff:      {{takeoff_link}}
 
-Please review the attached bid documents and return your proposal at your earliest convenience. Feel free to reach out with any questions.
+Please submit your bid by {{deadline}} and reach out with any questions.
 
-We look forward to working with you.
-
-Best regards,
+Thanks,
 {{sender_name}}
 {{sender_email}}`,
   },
-
-  vendor: {
-    label: "Vendor – Request for Quote",
+  requestForQuote: {
+    label: "Request for Quote",
     subject: "Request for Quote – {{project_name}}",
-    body: `Dear {{contact_name}},
+    body: `Hello,
 
-We are requesting a quote from {{company_name}} for materials/services on the following project:
+We are requesting a quote for the following project:
 
-Project:    {{project_name}}
-Project No: {{project_number}}
+Project:      {{project_name}}
+Owner:        {{owner}}
+Location:     {{project_location}}
+Bid Due:      {{bid_due_date}}
+Pre-Bid:      {{prebid_date}}
+RFI Cut-off:  {{question_due_date}}
+Plans:        {{plan_link}}
+Takeoff:      {{takeoff_link}}
 
-Please review the attached scope and provide your best pricing at your earliest convenience. Feel free to reach out with any questions.
+Please review the attached scope and return your pricing by {{deadline}}.
 
-We look forward to your response.
+Best,
+{{sender_name}}
+{{sender_email}}`,
+  },
+  proposalSummary: {
+    label: "Project Proposal Summary",
+    subject: "Proposal Summary – {{project_name}}",
+    body: `Hi,
 
-Best regards,
+Here is a summary for the following project:
+
+Project:      {{project_name}}
+Owner:        {{owner}}
+Location:     {{project_location}}
+Bid Due:      {{bid_due_date}}
+Pre-Bid:      {{prebid_date}}
+RFI Cut-off:  {{question_due_date}}
+Plans:        {{plan_link}}
+Takeoff:      {{takeoff_link}}
+
+We are targeting a bid submission by {{deadline}}.
+
+If anything needs clarification, I can follow up directly.
+
+Regards,
+{{sender_name}}
+{{sender_email}}`,
+  },
+  prebidReminder: {
+    label: "Pre-Bid Meeting Reminder",
+    subject: "Pre-Bid Meeting – {{project_name}}",
+    body: `Hello,
+
+This is a reminder about the upcoming pre-bid meeting for the following project:
+
+Project:      {{project_name}}
+Owner:        {{owner}}
+Location:     {{project_location}}
+Pre-Bid:      {{prebid_date}}
+RFI Cut-off:  {{question_due_date}}
+Bid Due:      {{bid_due_date}}
+Plans:        {{plan_link}}
+Takeoff:      {{takeoff_link}}
+
+Please plan to attend and submit any questions before the RFI cut-off.
+
+Thanks,
 {{sender_name}}
 {{sender_email}}`,
   },

@@ -29,6 +29,29 @@ function ensureClient(config) {
   return msalClient;
 }
 
+function hasOfficeSso() {
+  return typeof window !== "undefined" && typeof window.OfficeRuntime !== "undefined" && typeof window.OfficeRuntime.auth?.getAccessToken === "function";
+}
+
+function getSsoAccount() {
+  if (typeof window === "undefined" || typeof window.Office === "undefined") return null;
+  const profile = Office?.context?.mailbox?.userProfile;
+  if (!profile) return null;
+  return { username: profile.emailAddress || profile.displayName || "Outlook user" };
+}
+
+async function getSsoAccessToken(allowSignInPrompt = false) {
+  if (!hasOfficeSso()) {
+    throw new Error("Outlook SSO is not available in this host.");
+  }
+
+  try {
+    return await OfficeRuntime.auth.getAccessToken({ allowSignInPrompt });
+  } catch (err) {
+    throw err;
+  }
+}
+
 // Opens a dedicated auth dialog using Office.context.ui.displayDialogAsync.
 // The dialog runs the full MSAL redirect flow at /auth-dialog.html and writes
 // tokens into the shared localStorage so the parent can acquire silently afterwards.
@@ -104,6 +127,15 @@ async function interactiveLogin(config, client) {
 }
 
 export async function signIn(config) {
+  if (hasOfficeSso()) {
+    try {
+      await getSsoAccessToken(true);
+      return getSsoAccount();
+    } catch (err) {
+      console.warn("Outlook SSO signin failed, falling back to MSAL:", err);
+    }
+  }
+
   const client = ensureClient(config);
   await client.initialize();
 
@@ -116,7 +148,36 @@ export async function signIn(config) {
   return interactiveLogin(config, client);
 }
 
+export async function restoreSignIn(config) {
+  if (hasOfficeSso()) {
+    try {
+      await getSsoAccessToken(false);
+      return getSsoAccount();
+    } catch {
+      return null;
+    }
+  }
+
+  const client = ensureClient(config);
+  await client.initialize();
+
+  const accounts = client.getAllAccounts();
+  if (accounts.length > 0) {
+    client.setActiveAccount(accounts[0]);
+    return accounts[0];
+  }
+  return null;
+}
+
 async function getAccessToken(config) {
+  if (hasOfficeSso()) {
+    try {
+      return await getSsoAccessToken(false);
+    } catch (err) {
+      console.warn("Outlook SSO token acquisition failed, falling back to MSAL:", err);
+    }
+  }
+
   const client = ensureClient(config);
   await client.initialize();
 

@@ -18,6 +18,15 @@
     <AppDomain>https://login.microsoftonline.com</AppDomain>
     <AppDomain>https://graph.microsoft.com</AppDomain>
   </AppDomains>
+  <WebApplicationInfo>
+    <Id>81657760-0c02-42e4-9a1e-874374b6bec6</Id>
+    <Resource>https://graph.microsoft.com</Resource>
+    <Scopes>
+      <Scope>User.Read</Scope>
+      <Scope>Sites.ReadWrite.All</Scope>
+      <Scope>Files.ReadWrite.All</Scope>
+    </Scopes>
+  </WebApplicationInfo>
   <Hosts>
     <Host Name="Mailbox"/>
   </Hosts>

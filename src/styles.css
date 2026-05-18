@@ -529,3 +529,21 @@ select:disabled {
   padding: 1px 4px;
   color: var(--colorBrandForeground1);
 }
+
+.token-ref button.token-insert {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--colorNeutralStroke1);
+  border-radius: var(--radiusSmall);
+  background: var(--colorNeutralBackground1);
+  color: var(--colorBrandForeground1);
+  cursor: pointer;
+  font: inherit;
+}
+
+.token-ref button.token-insert:hover {
+  background: var(--colorNeutralBackground3);
+}
