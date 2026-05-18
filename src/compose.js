@@ -48,11 +48,11 @@ function resolveField(fields, candidates) {
 }
 
 function projectDisplayName(fields) {
-  return fields.Title || fields.ProjectName || fields.ProjectCode || fields.Name || "(Unnamed)";
+  return fields.Title || fields.Project_x0020_Name || "(Unnamed)";
 }
 
 function companyDisplayName(fields) {
-  return fields.Title || fields.CompanyName || fields.Name || "(Unnamed)";
+  return fields.Title || "(Unnamed)";
 }
 
 function buildTokenMap(project, company) {
@@ -66,11 +66,11 @@ function buildTokenMap(project, company) {
   } catch { /* dev mode */ }
   return {
     project_name:   projectDisplayName(pf),
-    project_number: pf.ProjectCode || pf.ProjectNumber || pf.ProjectNo || pf.Number || "",
+    project_number: String(pf.JobNumber || pf.EstimateNumber || ""),
     company_name:   companyDisplayName(cf),
     contact_name:   resolveField(cf, ["Contact Name 1", "ContactName1", "Primary Contact", "PrimaryContact"]) || companyDisplayName(cf),
     contact_email:  resolveField(cf, ["Email 1", "Email1", "Primary Contact Email", "PrimaryContactEmail"]),
-    contact_title:  resolveField(cf, ["Contact Title 1", "ContactTitle1"]),
+    contact_title:  resolveField(cf, ["Contact Title 1", "ContactTitle1", "Contact Title", "ContactTitle"]),
     today:          new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
     sender_name:    senderName,
     sender_email:   senderEmail,
@@ -107,7 +107,7 @@ function setStatus(message, type = "info") {
 
 const TOKEN_REFERENCE = [
   ["project_name",   "Project Title / Name from SharePoint"],
-  ["project_number", "ProjectCode field"],
+  ["project_number", "JobNumber / EstimateNumber from SharePoint"],
   ["company_name",   "Selected company name"],
   ["contact_name",   "Company primary contact name"],
   ["contact_email",  "Company primary contact email"],

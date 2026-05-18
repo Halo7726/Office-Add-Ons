@@ -2,6 +2,30 @@ function normalize(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+function tokenize(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length >= 2);
+}
+
+// Returns 0–50 based on the fraction of fieldValue's tokens found in searchText.
+// Requires at least 50% of tokens to match before awarding any score.
+function tokenOverlapScore(searchText, fieldValue) {
+  const searchTokens = new Set(tokenize(searchText));
+  const fieldTokens = tokenize(fieldValue);
+  if (fieldTokens.length === 0 || searchTokens.size === 0) return 0;
+  let matched = 0;
+  for (const token of fieldTokens) {
+    if (searchTokens.has(token)) matched++;
+  }
+  const ratio = matched / fieldTokens.length;
+  return ratio >= 0.5 ? Math.round(ratio * 50) : 0;
+}
+
 function allStringValues(record) {
   const fields = record?.fields || {};
   return Object.values(fields)
@@ -13,10 +37,7 @@ function chooseDisplayName(record) {
   const fields = record?.fields || {};
   return (
     fields.Title ||
-    fields.ProjectName ||
-    fields.ProjectCode ||
-    fields.CompanyName ||
-    fields.Name ||
+    fields.Project_x0020_Name ||
     "(Unnamed)"
   );
 }
@@ -29,11 +50,16 @@ function scoreRecord(searchText, record, preferredKeys = []) {
   let score = 0;
 
   for (const key of preferredKeys) {
-    const value = normalize(fields[key]);
-    if (!value) continue;
+    const rawValue = fields[key];
+    if (!rawValue) continue;
+    const value = normalize(rawValue);
 
     if (normalizedSearch.includes(value)) {
       score += value.length > 5 ? 60 : 30;
+    } else {
+      // Exact match failed — try token overlap to handle abbreviations (R&D vs R and D),
+      // missing words (LG East US R and D vs LG East R&D), and paraphrasing.
+      score += tokenOverlapScore(searchText, rawValue);
     }
   }
 
@@ -92,40 +118,13 @@ function findFieldKey(fields, candidates) {
   return null;
 }
 
-const ITB_RECIPIENT_EMAIL_KEYS = [
-  "Recipient Email",
-  "RecipientEmail",
-  "Email",
-  "VendorEmail",
-  "SubEmail",
-  "ContactEmail",
-];
+const ITB_RECIPIENT_EMAIL_KEYS = ["RecipientEmail"];
 
-const ITB_EMAIL_SUBJECT_KEYS = [
-  "Email Subject",
-  "EmailSubject",
-  "Subject",
-  "ITBSubject",
-];
+const ITB_EMAIL_SUBJECT_KEYS = ["EmailSubject"];
 
-const ITB_OWNER_KEYS = [
-  "Owner",
-  "OwnerCompany",
-  "GC",
-  "GeneralContractor",
-  "Client",
-  "ClientName",
-];
+const ITB_OWNER_KEYS = ["Owner"];
 
-const ITB_TYPE_KEYS = [
-  "Vendor or Subcontractor",
-  "VendorOrSubcontractor",
-  "Vendor or Sub",
-  "VendorOrSub",
-  "Type",
-  "VendorType",
-  "SubType",
-];
+const ITB_TYPE_KEYS = ["VendororSubcontractor"];
 
 export function resolveRoute(messageContext, projects, companies, config, options = {}) {
   const subject = messageContext?.subject || "";
@@ -134,13 +133,13 @@ export function resolveRoute(messageContext, projects, companies, config, option
   const companyIdOverride = options.companyIdOverride || null;
 
   const projectMatch = topMatch(projects, (record) =>
-    scoreRecord(subject, record, ["ProjectCode", "Title", "ProjectName"])
+    scoreRecord(subject, record, ["Title", "Project_x0020_Name"])
   );
 
   const rankedCompanies = rankMatches(companies, (record) => {
-    const domainScore = scoreRecord(senderDomain, record, ["Email", "Domain", "Website"]);
-    const subjectScore = scoreRecord(subject, record, ["Title", "CompanyName"]);
-    const fromScore = scoreRecord(from, record, ["Email"]);
+    const domainScore = scoreRecord(senderDomain, record, ["Web_x0020_Address"]);
+    const subjectScore = scoreRecord(subject, record, ["Title"]);
+    const fromScore = scoreRecord(from, record, ["Email_x0020_1"]);
     return domainScore + subjectScore + fromScore;
   });
 
@@ -240,7 +239,7 @@ export function resolveItbMatch(messageContext, itbItems, config) {
     // Score: ITB Email Subject or Title vs incoming email subject
     const subjectKey = findFieldKey(fields, ITB_EMAIL_SUBJECT_KEYS);
     const itbSubject = normalize(fields[subjectKey] || "");
-    const itbTitle = normalize(fields.Title || fields.ProjectName || "");
+    const itbTitle = normalize(fields.Title || fields.Project_x0020_Name || "");
 
     let titleScore = 0;
     if (itbTitle.length >= 4 && incomingSubject.includes(itbTitle)) {
@@ -263,7 +262,7 @@ export function resolveItbMatch(messageContext, itbItems, config) {
   if (!best) return null;
 
   const fields = best.item.fields || {};
-  const projectName = fields.Title || fields.ProjectName || fields.ProjectCode || "(Unnamed Project)";
+  const projectName = fields.Title || fields.Project_x0020_Name || "(Unnamed Project)";
 
   const ownerKey = findFieldKey(fields, ITB_OWNER_KEYS);
   const ownerName = ownerKey ? String(fields[ownerKey] || "").trim() : null;

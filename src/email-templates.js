@@ -4,7 +4,7 @@
 // Templates support the following tokens — all replaced at send time:
 //
 //   {{project_name}}   — project Title / ProjectName from SharePoint
-//   {{project_number}} — ProjectCode / ProjectNumber from SharePoint
+//   {{project_number}} — JobNumber / EstimateNumber from SharePoint
 //   {{company_name}}   — selected company Title / CompanyName
 //   {{contact_name}}   — company "Contact Name 1" field (falls back to company name)
 //   {{contact_email}}  — company "Email 1" field

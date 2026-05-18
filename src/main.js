@@ -28,6 +28,8 @@ const state = {
   uploadResults: [],
   showSettings: false,
   showNewCompanyForm: false,
+  replaceContact1: false,
+  setContact2: false,
   statusMessage: "Ready.",
   statusType: "info",
 };
@@ -85,13 +87,30 @@ function getCompanyRecordById(companyId) {
 }
 
 function getProjectDisplayName(record) {
-  return record?.fields?.Title || record?.fields?.ProjectName || record?.fields?.ProjectCode || "(Unnamed)";
+  return record?.fields?.Title || record?.fields?.Project_x0020_Name || "(Unnamed)";
+}
+
+function getProjectEstimateStatus(fields) {
+  const key = resolveFirstExistingFieldKey(fields, ["EstimateStatus", "Estimate Status"]);
+  return key ? String(fields[key] || "").trim() : "";
 }
 
 function buildProjectSelectOptions() {
   const activeId = state.selectedProjectId || state.route?.project?.id || "";
-  return [...state.projects]
-    .sort((a, b) => getProjectDisplayName(a).localeCompare(getProjectDisplayName(b)))
+
+  const filtered = state.projects.filter((p) => {
+    const status = getProjectEstimateStatus(p.fields || {}).toLowerCase();
+    return status === "current" || status === "pending";
+  });
+
+  const sorted = filtered.sort((a, b) => {
+    const sa = getProjectEstimateStatus(a.fields || {}).toLowerCase();
+    const sb = getProjectEstimateStatus(b.fields || {}).toLowerCase();
+    if (sa !== sb) return sa === "current" ? -1 : 1;
+    return getProjectDisplayName(a).localeCompare(getProjectDisplayName(b));
+  });
+
+  return sorted
     .map((p) => {
       const name = getProjectDisplayName(p);
       const selected = p.id === activeId ? "selected" : "";
@@ -100,16 +119,27 @@ function buildProjectSelectOptions() {
     .join("");
 }
 
-function buildFolderPathFromRouteTemplate(projectName, companyName) {
+function buildFolderPathFromRoute(projectRecord, companyName, typeFolder) {
+  const fields = projectRecord?.fields || {};
+  const pathKey = resolveFirstExistingFieldKey(fields, PROJECT_FOLDER_PATH_KEYS);
+  const rawPath = pathKey ? fields[pathKey] : null;
+  const cleanPath = extractDriveRelativePath(rawPath);
+  const resolvedType = typeFolder || "Subcontractors";
+  const sanitizedCompany = sanitizeFileName(String(companyName || "Unknown").trim());
+
+  if (cleanPath) {
+    return [cleanPath, resolvedType, sanitizedCompany].filter(Boolean).join("/");
+  }
+
+  // Fall back to template when no FilePath is stored on the project record
+  const projectName = getProjectDisplayName(projectRecord);
   const template =
     state.config.folderTemplate || "Estimating Dashboard/Bids/Current/{project}/Subcontractors/{subcontractor}";
-
   const sanitize = (value, fallback) =>
     String(value || fallback || "Unknown")
       .replace(/[\\/:*?"<>|]/g, "-")
       .replace(/\s+/g, " ")
       .trim();
-
   return template
     .replaceAll("{project}", sanitize(projectName, "Unmapped Project"))
     .replaceAll("{subcontractor}", sanitize(companyName, "Unmapped Subcontractor"));
@@ -133,15 +163,10 @@ function buildUploadFileName(originalName, companyName, projectTitle, attachment
 }
 
 // Field names to check in the project list for the SharePoint drive item ID
-const PROJECT_FOLDER_ID_KEYS = [
-  "FolderID", "FolderId", "folderid", "ItemId", "DriveItemId",
-];
+const PROJECT_FOLDER_ID_KEYS = ["FolderID"];
 
 // Field names to check in the project list for the SharePoint folder path
-const PROJECT_FOLDER_PATH_KEYS = [
-  "FilePath", "FolderPath", "ProjectFolder", "BidFolder", "LibraryPath",
-  "SharePointPath", "ProjectPath", "BidPath", "FolderLocation", "Path",
-];
+const PROJECT_FOLDER_PATH_KEYS = ["FilePath"];
 
 // Field names to check in the ITB item for the owner / GC name
 const ITB_OWNER_KEYS = [
@@ -177,7 +202,8 @@ function extractDriveRelativePath(rawPath) {
   // Already a relative path (no leading slash)
   if (!path.startsWith("/")) return path;
 
-  return null;
+  // Server-relative path like /Estimating Dashboard/Bids/Current/Project Name — strip leading slash
+  return path.slice(1);
 }
 
 // Tries up to four strategies to locate the existing project folder, then
@@ -215,36 +241,8 @@ async function findUploadFolderId(typeFolder, companyName) {
   return null;
 }
 
-// Builds the upload folder path from the ITB match, using the Vendor/Sub type
-// from the ITB row to set the middle path segment instead of the template default.
-// Result: {template prefix}/{project}/{Vendors or Subcontractors}/{company}
-function buildItbFolderPath(projectName, typeValue, companyName, ownerName) {
-  const template = state.config.folderTemplate || "Estimating Dashboard/Bids/Current/{project}/Subcontractors/{subcontractor}";
-  const sanitize = (v, fallback) =>
-    String(v || fallback || "Unknown")
-      .replace(/[\\/:*?"<>|]/g, "-")
-      .replace(/\s+/g, " ")
-      .trim();
-
-  const normalized = (value) => String(value || "").trim().toLowerCase();
-  const projectSegment = ownerName && !normalized(projectName).startsWith(normalized(ownerName))
-    ? `${ownerName} - ${projectName}`
-    : projectName;
-
-  // Extract the static prefix before {project} (e.g. "Bids/Current/")
-  const projectIdx = template.indexOf("{project}");
-  const prefix = projectIdx >= 0 ? template.slice(0, projectIdx).replace(/\/+$/, "") : "";
-
-  const typeFolder = normalizeTypeToFolder(typeValue);
-
-  return [
-    prefix,
-    sanitize(projectSegment, "Unmapped Project"),
-    typeFolder,
-    sanitize(companyName, "Unknown"),
-  ]
-    .filter(Boolean)
-    .join("/");
+function buildItbFolderPath(projectRecord, typeValue, companyName) {
+  return buildFolderPathFromRoute(projectRecord, companyName, normalizeTypeToFolder(typeValue));
 }
 
 function buildCompanySelectOptions(route) {
@@ -259,7 +257,7 @@ function buildCompanySelectOptions(route) {
   ) {
     const rec = getCompanyRecordById(state.selectedCompanyId);
     if (rec) {
-      const name = rec.fields?.Title || rec.fields?.CompanyName || "New Company";
+      const name = rec.fields?.Title || "New Company";
       parts.push(`<option value="${escapeHtml(state.selectedCompanyId)}" selected>${escapeHtml(name)}</option>`);
     }
   }
@@ -291,6 +289,7 @@ function inferCompanyFieldKey(desiredNames) {
 function buildNewCompanyForm() {
   const fromEmail = state.messageContext?.from || "";
   const contactName = fromEmail ? emailToDisplayName(fromEmail) : "";
+  const defaultType = state.itbMatch?.typeValue || "Subcontractor";
   return `
     <div class="new-company-form">
       <h3>New Company</h3>
@@ -298,17 +297,29 @@ function buildNewCompanyForm() {
         <label>Company Name *
           <input id="newCompanyName" placeholder="Enter company name" />
         </label>
+        <label>Company Type *
+          <div class="multiselect-dropdown" id="companyTypeDropdown">
+            <button type="button" class="multiselect-trigger" id="companyTypeBtn">
+              <span id="companyTypeDisplay">${defaultType}</span>
+              <span class="multiselect-arrow">&#9660;</span>
+            </button>
+            <div class="multiselect-menu" id="companyTypeMenu">
+              ${["Subcontractor","Vendor","Competitor","Engineer/Architect","Customer/Owner"].map(type => `
+                <label class="multiselect-item">
+                  <input type="checkbox" name="newCompanyType" value="${type}" ${type === defaultType ? "checked" : ""} />
+                  ${type}
+                </label>`).join("")}
+            </div>
+          </div>
+        </label>
         <label>Contact Name
-          <input id="newContactName1" value="${escapeHtml(contactName)}" />
+          <input id="newContactName1" value="${escapeHtml(contactName)}" placeholder="Enter contact name" />
         </label>
         <label>Contact Title
           <input id="newContactTitle1" value="Estimator" />
         </label>
         <label>Email
-          <input id="newEmail1" type="email" value="${escapeHtml(fromEmail)}" />
-        </label>
-        <label>Direct Line
-          <input id="newDirectLine1" placeholder="N/A" />
+          <input id="newEmail1" type="email" value="${escapeHtml(fromEmail)}" placeholder="Enter email" />
         </label>
         <label>Mobile
           <input id="newMobile1" placeholder="N/A" />
@@ -322,52 +333,71 @@ function buildNewCompanyForm() {
   `;
 }
 
-function buildCompanyContactPatch(companyRecord, fromEmail) {
+function buildCompanyContactPatch(companyRecord, fromEmail, opts = {}) {
+  const { replaceContact1 = false, setContact2 = false } = opts;
   const fields = companyRecord?.fields || {};
   const patch = {};
   const senderEmail = String(fromEmail || "").trim();
   const senderName = emailToDisplayName(senderEmail);
 
-  const fieldGroups = {
-    contactName1: ["Contact Name 1", "ContactName1", "Primary Contact", "PrimaryContact"],
-    contactTitle1: ["Contact Title 1", "ContactTitle1"],
-    directLine1: ["Extension/Direct Line 1", "ExtensionDirectLine1"],
-    mobile1: ["Mobile Number 1", "MobileNumber1"],
-    email1: ["Email 1", "Email1", "Primary Contact Email", "PrimaryContactEmail"],
-    contactName2: ["Contact Name 2", "ContactName2", "Secondary Contact", "SecondaryContact"],
-    contactTitle2: ["Contact Title 2", "ContactTitle2"],
-    directLine2: ["Extension/Direct Line 2", "ExtensionDirectLine2"],
-    mobile2: ["Mobile Phone 2", "MobilePhone2", "Mobile Number 2", "MobileNumber2"],
-    email2: ["Email 2", "Email2", "Secondary Contact Email", "SecondaryContactEmail"],
-  };
+  const contact1Filled = !isBlank(fields.Contact_x0020_Name_x0020_1);
 
-  const setIfMissing = (groupName, value) => {
-    const key = resolveFirstExistingFieldKey(fields, fieldGroups[groupName]);
-    if (key && isBlank(fields[key])) {
-      patch[key] = value;
-      return true;
-    }
-    return false;
-  };
-
-  const filledPrimary = setIfMissing("contactName1", senderName);
-  if (filledPrimary) {
-    setIfMissing("contactTitle1", "Estimator Contact");
+  if (!contact1Filled || replaceContact1) {
+    if (senderName) patch.Contact_x0020_Name_x0020_1 = senderName;
+    if (senderEmail) patch.Email_x0020_1 = senderEmail;
+    if (!contact1Filled) patch.Contact_x0020_Title = "Estimator Contact";
   }
 
-  if (senderEmail) {
-    setIfMissing("email1", senderEmail);
-    setIfMissing("email2", senderEmail);
+  if (setContact2) {
+    if (senderName) patch.Contact_x0020_Name_x0020_2 = senderName;
+    if (senderEmail) patch.Email_x0020_2 = senderEmail;
+    patch.Contact_x0020_Title_x0020_2 = "Estimator Contact";
   }
-
-  setIfMissing("contactName2", "Pending Contact");
-  setIfMissing("contactTitle2", "Pending");
-  setIfMissing("directLine1", "N/A");
-  setIfMissing("directLine2", "N/A");
-  setIfMissing("mobile1", "N/A");
-  setIfMissing("mobile2", "N/A");
 
   return patch;
+}
+
+function resetContactUpdateFlags() {
+  const company = getCompanyRecordById(state.selectedCompanyId);
+  const fields = company?.fields || {};
+  state.replaceContact1 = isBlank(fields.Contact_x0020_Name_x0020_1);
+  state.setContact2 = false;
+}
+
+function buildContactUpdatePanel() {
+  const companyId = state.selectedCompanyId;
+  if (!companyId || companyId === "__new__" || state.showNewCompanyForm) return "";
+  const company = getCompanyRecordById(companyId);
+  if (!company || !state.messageContext?.from) return "";
+
+  const f = company.fields || {};
+  const c1Name  = String(f.Contact_x0020_Name_x0020_1 || "").trim();
+  const c1Email = String(f.Email_x0020_1 || "").trim();
+  const c2Name  = String(f.Contact_x0020_Name_x0020_2 || "").trim();
+  const c2Email = String(f.Email_x0020_2 || "").trim();
+
+  const senderName  = escapeHtml(emailToDisplayName(state.messageContext.from));
+  const senderEmail = escapeHtml(state.messageContext.from);
+
+  const c1Current = c1Name
+    ? `${escapeHtml(c1Name)}${c1Email ? ` — ${escapeHtml(c1Email)}` : ""}`
+    : "<em>empty</em>";
+  const c2Current = c2Name
+    ? `${escapeHtml(c2Name)}${c2Email ? ` — ${escapeHtml(c2Email)}` : ""}`
+    : "<em>empty</em>";
+
+  return `
+    <div class="contact-update-panel">
+      <span class="label">Update contacts from sender: ${senderName} — ${senderEmail}</span>
+      <label class="contact-update-row">
+        <input type="checkbox" id="replaceContact1" ${state.replaceContact1 ? "checked" : ""} />
+        <span>Contact 1: ${c1Current}${c1Name ? " — <strong>replace</strong>" : " — fill"}</span>
+      </label>
+      <label class="contact-update-row">
+        <input type="checkbox" id="setContact2" ${state.setContact2 ? "checked" : ""} />
+        <span>Contact 2: ${c2Current}${c2Name ? " — <strong>replace</strong>" : " — set"}</span>
+      </label>
+    </div>`;
 }
 
 function normalizeText(value) {
@@ -425,20 +455,20 @@ async function updateItbMatchStatus() {
   const statusKey = resolveResponsePatchField(fields);
   const currentValue = normalizeText(fields[statusKey]);
 
-  if (currentValue === "quote received") {
+  if (currentValue === "quoted") {
     return {
       updated: false,
-      reason: `ITB/RFQ item "${state.itbMatch?.projectName || item.id}" is already marked as Quote Received.`,
+      reason: `ITB/RFQ item "${state.itbMatch?.projectName || item.id}" is already marked as Quoted.`,
     };
   }
 
-  const patch = { [statusKey]: "Quote Received" };
+  const patch = { [statusKey]: "Quoted" };
   await updateListItemFields(state.config, state.config.responseListId, item.id, patch);
   item.fields = { ...fields, ...patch };
 
   return {
     updated: true,
-    reason: `Marked ITB/RFQ item "${state.itbMatch?.projectName || item.id}" as Quote Received.`,
+    reason: `Marked ITB/RFQ item "${state.itbMatch?.projectName || item.id}" as Quoted.`,
   };
 }
 
@@ -551,7 +581,7 @@ function createApp() {
         <label>Subcontractor match options
           <select id="companySelect">${companyOptions}</select>
         </label>
-        ${state.showNewCompanyForm ? buildNewCompanyForm() : ""}
+        ${state.showNewCompanyForm ? buildNewCompanyForm() : buildContactUpdatePanel()}
         <div class="actions">
           <button id="signin" class="btn-secondary">Sign in</button>
           <button id="autoMatch" class="btn-primary">Auto-match</button>
@@ -712,6 +742,7 @@ async function runAutoMatch() {
   state.route = resolveRoute(state.messageContext, state.projects, state.companies, state.config);
   state.selectedCompanyId =
     state.route.subcontractor.id || state.route.companyCandidates[0]?.id || "";
+  resetContactUpdateFlags();
 
   if (state.selectedCompanyId) {
     state.route = resolveRoute(state.messageContext, state.projects, state.companies, state.config, {
@@ -719,23 +750,32 @@ async function runAutoMatch() {
     });
   }
 
-  // Override project name and folder path with the ITB match when found.
-  // Keep the project list item ID from resolveRoute — that's what points to the
-  // FilePath field. Only the display name comes from the ITB row.
+  const matchedProjectRec = state.route.project.id
+    ? state.projects.find((r) => r.id === state.route.project.id) || null
+    : null;
+
   if (state.itbMatch) {
     state.route.project = {
-      id: state.route.project.id,        // project list item ID — needed for FilePath lookup
-      name: state.itbMatch.projectName,  // display name from the ITB row (more authoritative)
+      id: state.route.project.id,
+      name: state.itbMatch.projectName,
       score: state.itbMatch.emailScore + state.itbMatch.titleScore,
     };
     state.route.folderPath = buildItbFolderPath(
-      state.itbMatch.projectName,
+      matchedProjectRec,
       state.itbMatch.typeValue,
-      state.route.subcontractor.name,
-      state.itbMatch.ownerName
+      state.route.subcontractor.name
     );
     state.route.confidence = state.itbMatch.confidence;
     state.route.reason = `ITB/RFQ matched on recipient email + title (${state.itbMatch.confidence}% confidence)`;
+  } else if (matchedProjectRec) {
+    const companyRec = getCompanyRecordById(state.selectedCompanyId);
+    const typeRaw = companyRec?.fields?.Company_x0020_Type;
+    const typeValue = (Array.isArray(typeRaw) ? typeRaw[0] : typeRaw) || "Subcontractor";
+    state.route.folderPath = buildFolderPathFromRoute(
+      matchedProjectRec,
+      state.route.subcontractor.name,
+      normalizeTypeToFolder(typeValue)
+    );
   }
 }
 
@@ -750,8 +790,9 @@ function applySelectedCompanyOverride() {
     state.selectedCompanyId ? { companyIdOverride: state.selectedCompanyId } : undefined
   );
 
-  // Re-apply ITB folder path so changing the company dropdown keeps the correct type segment.
-  // Preserve the project list item ID — only the display name comes from the ITB row.
+  const projectId = state.route.project.id || state.selectedProjectId || null;
+  const projectRec = projectId ? state.projects.find((r) => r.id === projectId) || null : null;
+
   if (state.itbMatch) {
     state.route.project = {
       id: state.route.project.id,
@@ -759,23 +800,24 @@ function applySelectedCompanyOverride() {
       score: state.itbMatch.emailScore + state.itbMatch.titleScore,
     };
     state.route.folderPath = buildItbFolderPath(
-      state.itbMatch.projectName,
+      projectRec,
       state.itbMatch.typeValue,
-      state.route.subcontractor.name,
-      state.itbMatch.ownerName
+      state.route.subcontractor.name
     );
     return;
   }
 
-  // If the user manually selected a project (no auto-match), re-apply it after resolveRoute
-  // resets state.route — resolveRoute scores against the email and may not find a match.
-  if (state.selectedProjectId && !state.route.project.id) {
-    const rec = state.projects.find((p) => p.id === state.selectedProjectId);
-    if (rec) {
-      const name = getProjectDisplayName(rec);
-      state.route.project = { id: state.selectedProjectId, name, score: 0 };
-      state.route.folderPath = buildFolderPathFromRouteTemplate(name, state.route.subcontractor.name);
-    }
+  if (projectRec) {
+    const name = getProjectDisplayName(projectRec);
+    state.route.project = { id: projectId, name, score: state.route.project.score };
+    const companyRec = getCompanyRecordById(state.selectedCompanyId);
+    const typeRaw = companyRec?.fields?.Company_x0020_Type;
+    const typeValue = (Array.isArray(typeRaw) ? typeRaw[0] : typeRaw) || "Subcontractor";
+    state.route.folderPath = buildFolderPathFromRoute(
+      projectRec,
+      state.route.subcontractor.name,
+      normalizeTypeToFolder(typeValue)
+    );
   }
 }
 
@@ -789,7 +831,10 @@ async function patchSelectedCompanyContactsIfMissing() {
     return { updated: false, reason: "No matched company selected." };
   }
 
-  const patch = buildCompanyContactPatch(company, state.messageContext?.from || "");
+  const patch = buildCompanyContactPatch(company, state.messageContext?.from || "", {
+    replaceContact1: state.replaceContact1,
+    setContact2: state.setContact2,
+  });
   if (Object.keys(patch).length === 0) {
     return { updated: false, reason: "Selected company already has contact fields populated." };
   }
@@ -809,27 +854,27 @@ async function createNewCompany() {
     throw new Error("Company List ID is not configured in settings.");
   }
 
+  // Read all form values before any awaits — an async gap can trigger a render that
+  // rebuilds the form from the original state, wiping any edits the user made.
   const name = document.getElementById("newCompanyName").value.trim();
   if (!name) throw new Error("Company name is required.");
 
-  const contact1Key = inferCompanyFieldKey(["Contact Name 1", "ContactName1", "Primary Contact", "PrimaryContact"]);
-  const title1Key   = inferCompanyFieldKey(["Contact Title 1", "ContactTitle1"]);
-  const email1Key   = inferCompanyFieldKey(["Email 1", "Email1", "Primary Contact Email", "PrimaryContactEmail"]);
-  const line1Key    = inferCompanyFieldKey(["Extension/Direct Line 1", "ExtensionDirectLine1"]);
-  const mobile1Key  = inferCompanyFieldKey(["Mobile Number 1", "MobileNumber1"]);
-
-  const fields = {
-    Title:       name,
-    [contact1Key]: document.getElementById("newContactName1").value.trim() || "N/A",
-    [title1Key]:   document.getElementById("newContactTitle1").value.trim() || "N/A",
-    [email1Key]:   document.getElementById("newEmail1").value.trim() || "N/A",
-    [line1Key]:    document.getElementById("newDirectLine1").value.trim() || "N/A",
-    [mobile1Key]:  document.getElementById("newMobile1").value.trim() || "N/A",
+  const companyTypeSelected = Array.from(document.querySelectorAll('input[name="newCompanyType"]:checked')).map(o => o.value);
+  const patch = {
+    "Company_x0020_Type@odata.type": "Collection(Edm.String)",
+    Company_x0020_Type:          companyTypeSelected,
+    Contact_x0020_Name_x0020_1:  document.getElementById("newContactName1").value.trim() || "N/A",
+    Contact_x0020_Title:         document.getElementById("newContactTitle1").value.trim() || "N/A",
+    Email_x0020_1:               document.getElementById("newEmail1").value.trim() || "N/A",
+    Mobile_x0020_Number_x0020_1: document.getElementById("newMobile1").value.trim() || "N/A",
   };
 
-  const result = await addListItem({ ...state.config, listId: state.config.companyListId }, fields);
+  // POST with Title only — the /items endpoint is finicky with multi-select choice fields.
+  // All other fields are set via a follow-up PATCH using the /fields endpoint.
+  const result = await addListItem({ ...state.config, listId: state.config.companyListId }, { Title: name });
+  await updateListItemFields(state.config, state.config.companyListId, result.id, patch);
 
-  const newRecord = { id: result.id, fields: { ...fields } };
+  const newRecord = { id: result.id, fields: { Title: name, ...patch } };
   state.companies.push(newRecord);
   state.selectedCompanyId = result.id;
   state.showNewCompanyForm = false;
@@ -874,11 +919,16 @@ async function uploadSelected() {
     state.route?.project?.name;
   const companyName = state.route?.subcontractor?.name || "Company";
 
-  // Locate the existing project folder in SharePoint rather than constructing
-  // a path from the template, which risks creating a duplicate project folder.
+  // Locate the existing project folder via the project record's FilePath or FolderID,
+  // then navigate into the company type subfolder and find/create the company folder.
   let uploadFolderId = null;
-  if (state.itbMatch) {
-    const typeFolder = normalizeTypeToFolder(state.itbMatch.typeValue);
+  if (state.route?.project?.id) {
+    const companyRecord = getCompanyRecordById(state.selectedCompanyId || state.route?.subcontractor?.id);
+    const companyTypeRaw = companyRecord?.fields?.Company_x0020_Type;
+    const typeValue = (Array.isArray(companyTypeRaw) ? companyTypeRaw[0] : companyTypeRaw)
+      || state.itbMatch?.typeValue
+      || "Subcontractor";
+    const typeFolder = normalizeTypeToFolder(typeValue);
     const sanitizedCompany = sanitizeFileName(companyName);
     setStatus("Locating project folder in SharePoint…", "info");
     uploadFolderId = await findUploadFolderId(typeFolder, sanitizedCompany);
@@ -1001,7 +1051,10 @@ function wireEvents() {
 
       const name = getProjectDisplayName(rec);
       state.route.project = { id: projectId, name, score: 0 };
-      state.route.folderPath = buildFolderPathFromRouteTemplate(name, state.route.subcontractor.name);
+      const companyRec = getCompanyRecordById(state.selectedCompanyId);
+      const typeRaw = companyRec?.fields?.Company_x0020_Type;
+      const typeValue = (Array.isArray(typeRaw) ? typeRaw[0] : typeRaw) || "Subcontractor";
+      state.route.folderPath = buildFolderPathFromRoute(rec, state.route.subcontractor.name, normalizeTypeToFolder(typeValue));
       document.getElementById("resolvedFolderPath").value = state.route.folderPath;
     });
   }
@@ -1016,11 +1069,37 @@ function wireEvents() {
     }
     state.showNewCompanyForm = false;
     state.selectedCompanyId = value;
+    resetContactUpdateFlags();
     applySelectedCompanyOverride();
     document.getElementById("resolvedFolderPath").value = state.route?.folderPath || "";
   });
 
+  const rc1 = document.getElementById("replaceContact1");
+  if (rc1) rc1.addEventListener("change", (e) => { state.replaceContact1 = e.target.checked; });
+
+  const sc2 = document.getElementById("setContact2");
+  if (sc2) sc2.addEventListener("change", (e) => { state.setContact2 = e.target.checked; });
+
   if (state.showNewCompanyForm) {
+    const companyTypeBtn = document.getElementById("companyTypeBtn");
+    const companyTypeMenu = document.getElementById("companyTypeMenu");
+    const companyTypeDisplay = document.getElementById("companyTypeDisplay");
+
+    companyTypeBtn.addEventListener("click", () => {
+      companyTypeMenu.classList.toggle("open");
+    });
+
+    document.addEventListener("click", (e) => {
+      if (!document.getElementById("companyTypeDropdown")?.contains(e.target)) {
+        companyTypeMenu.classList.remove("open");
+      }
+    }, { capture: true });
+
+    companyTypeMenu.addEventListener("change", () => {
+      const checked = Array.from(document.querySelectorAll('input[name="newCompanyType"]:checked')).map(o => o.value);
+      companyTypeDisplay.textContent = checked.length ? checked.join(", ") : "Select...";
+    });
+
     document.getElementById("createCompany").addEventListener("click", async () => {
       await withBusy("Create company", async () => {
         await createNewCompany();
